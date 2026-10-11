@@ -24,7 +24,7 @@ check_c20() {
     fi
   else
     _v="$_v
-- 当前远程交互会话:0(登录会话均为本地/服务上下文)"
+- 当前远程交互会话:登录记录中未识别(不排除不可见会话)"
   fi
   if [ -n "${SELF_PEER_CC:-}" ]; then
     case "$SELF_PEER_CC" in
@@ -38,7 +38,11 @@ check_c20() {
   · 自身会话控制端 $(mask_ip "$SELF_PEER")(GeoIP 未查/offline)"
   else
     _v="$_v
-  · 无 SSH 会话(本地/服务上下文)"
+  · 当前采集进程未提供 SSH 对端环境变量(不代表主机无 SSH 会话)"
+  fi
+  if [ "$PLATFORM" = macos ] && [ "${MAC_SSH_PEER_N:-0}" -gt 0 ]; then
+    _v="$_v
+  · 可见 sshd 进程的活动 TCP 对端 ${MAC_SSH_PEER_N} 个(可含转发,不计入交互登录数量)"
   fi
   # deep-geo 会话对端命中
   _dghit=""

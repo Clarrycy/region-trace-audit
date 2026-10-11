@@ -176,7 +176,7 @@ f5
 n[2001:db8::1]:5500->[2001:db8::2]:443
 TST=ESTABLISHED
 EOF""")
-        items = self.run_checks('mac_socket_context; report INFO fixture/sockets "$MAC_SOCKETS"; report INFO fixture/ip "$(mac_endpoint_ip "[2001:db8::2]:443")"; check_c18')
+        items = self.run_checks('mac_socket_context; report INFO fixture/sockets "$MAC_SOCKETS"; report INFO fixture/ip "$(mac_endpoint_ip "[2001:db8::2]:443")"; check_c18; report INFO fixture/logins "$SESS_REMOTES"; check_c20; report INFO fixture/view "$USEGEO_VIEW"')
         rows = self.item(items, 'fixture/sockets')[0]['message'].splitlines()
         self.assertEqual(rows, ['100|sshd|ESTABLISHED|192.168.1.2:22|203.0.113.7:4000', '100|sshd|LISTEN|*:22|', '200|AnyDesk|ESTABLISHED|[2001:db8::1]:5500|[2001:db8::2]:443'])
         self.assertEqual(self.item(items, 'fixture/ip')[0]['message'], '2001:db8::2')
@@ -184,6 +184,8 @@ EOF""")
         self.assertEqual(ssh['level'], 'INFO')
         self.assertIn('1 个', ssh['message'])
         self.assertNotIn('203.0.113.7', ssh['message'])
+        self.assertEqual(self.item(items, 'fixture/logins')[0]['message'], '')
+        self.assertIn('不计入交互登录数量', self.item(items, 'fixture/view')[0]['message'])
 
     def test_unreadable_sockets_do_not_prove_absence(self):
         self.mock('lsof', 'exit 1')

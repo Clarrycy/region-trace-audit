@@ -8,10 +8,11 @@ mac_check_ssh() {
     [ -n "$_endpoint" ] || continue
     _peer=$(mac_endpoint_ip "$_endpoint")
     _ms_n=$((_ms_n+1)); _ms_masked="$_ms_masked $(mask_ip "$_peer")"
-    case " $SESS_REMOTES " in *" $_peer "*) ;; *) SESS_REMOTES="$SESS_REMOTES $_peer" ;; esac
   done <<EOF_PEERS
 $_ms_peers
 EOF_PEERS
+  # sshd also owns forwarded sockets; do not turn them into interactive logins.
+  MAC_SSH_PEER_N=$_ms_n
   if [ "$_ms_n" -gt 0 ]; then
     report INFO session/ssh-peers "macOS lsof 绑定到 sshd 进程的活动 TCP 对端 $_ms_n 个:$_ms_masked(可含转发连接;非自身对端 GeoIP 需 --deep-geo)"
   elif [ "$MAC_SOCKETS_OK" = 1 ]; then
