@@ -18,7 +18,7 @@ check_c2() {
     fi
     [ -n "$_vendor" ] && report INFO cloud/dmi "DMI: $_vendor / ${_product:-?}"
   else
-    report SKIP cloud/dmi "(容器内无 DMI 或不可读)"
+    report SKIP cloud/dmi "(Linux DMI 接口不适用或不可读;macOS 硬件见 hw 类)"
   fi
 
   # 云 agent 进程

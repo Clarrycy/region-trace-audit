@@ -91,13 +91,44 @@ sh region-trace-audit.sh --help
 
 POSIX sh + 常规 coreutils 即可运行;`curl` 或 `wget`、`awk`、`iproute2`、`systemd`、`traceroute`/`tracepath`、`fc-list`、`git`、`launchctl`(macOS)等按存在性启用对应检测,缺失即降级为跳过并注明。容器/WSL/MSYS 环境自动识别并缩减范围。
 
+## macOS 支持
+
+可直接使用系统 `/bin/sh`，不需要安装 GNU coreutils、Python 或提权。Python 仅用于开发回归测试。
+
+```sh
+sh dist/region-trace-audit.sh --offline   # 纯本地
+sh dist/region-trace-audit.sh --json      # 本地 + 默认联网探测
+```
+
+原生采集覆盖 `sw_vers`/`sysctl` 系统与硬件信息、启动时间、`route`/`ifconfig` 网络上下文、`netstat` TCP 监听端口、`scutil --dns` 动态解析器、`scutil --proxy` 的 HTTP/HTTPS/SOCKS/PAC/WPAD 开关、console 图形登录，以及现有的区域/输入源/launchd/用户字体/Homebrew 检查。仅报告代理开关，不读取 PAC 内容或输出 PAC URL。
+
+macOS 内置的中文 locale 和系统 CJK 字体不是用户选择，不据此判可疑；`com.todesktop` 等 bundle ID 不再误匹配 ToDesk。浏览器路径支持 `Application Support`、`Microsoft Edge`、带空格的 Firefox profile。历史检测仍是文件前 30MB 的域名近似匹配计数，不代表访问次数，不输出 URL 或查询词。
+
+采集失败和不支持的项目明确标为 SKIP：Linux `/proc`、systemd、LSM/cgroup 检查不适用于 macOS；SSH socket 对端归属、远控活动会话、PF/Network Extension 规则、无线监管域/蜂窝信息尚未实现。不因缺少 Linux 接口而宣称无桌面、无无线硬件、无 SSH 或无远控。`--radio` 在 macOS 明确跳过，不调用已弃用的 `airport`，不申请定位或完整磁盘访问权限。TCC/沙箱限制仍可能缩小可读范围。
+
+DNS 解析器来自动态配置，包含 scoped/supplemental 记录；默认 `dig`/`nslookup` 探测不覆盖所有按域名或接口选路的应用解析路径。系统代理配置也不保证命令行 `curl` 使用相同代理，出口结果仅代表探测进程。
+
+时间采集兼容 BSD/GNU `stat`，保留带空格/引号的采样路径，Git 时间直接使用 epoch，修复一二月日期转换、周末占比 `awk` 报错和多字节直方图乱码。文件采样仍使用有界的逐行路径列表，文件名含换行不受支持；作息推断仍是原有启发式，不等于实际位置。
+
+### 开发验证
+
+```sh
+sh build.sh
+python3 tests/test-macos.py
+TEST_SHELL=/bin/dash python3 tests/test-macos.py # 本机有 dash 时
+sh tests/test-json-injection.sh
+sh tests/test-time-compound.sh
+```
+
+macOS 回归使用临时目录和命令夹具，覆盖启用/关闭/无权限、路径含空格、日期边界等正负例；不访问真实用户记录或联网。CI 在 macOS 和 Ubuntu 的 sh/bash 下运行。原生 macOS 26.1 Apple Silicon 已完成离线全量实测，JSON 可解析且 stderr 为空。
+
 ## 已知局限
 
 - 多用户/共享服务器:会话与作息信号混合多人;作息置信度低时不作一致性判定
 - GeoIP 精度与中转:出口/控制端判定受数据库与链路影响;中继后不可观察,输出链断点声明
 - 作息推断:夜猫型作息会前移推断值;样本 <30 簇不判定;**东/东南亚 +7 时区(曼谷/雅加达/河内/珀斯)与 +8 在边界小时上原理性不可分** —— 单条作息仅可疑,升级需复合旁证
 - 内地假日/调休表覆盖 2024–2026(国办发明电官方通知;2027 待公布)
-- macOS 为适配层覆盖(scutil/defaults/launchctl/输入法/字体/Homebrew),未在实机全量验证
+- macOS 的 SSH socket/远控活动归属、PF/Network Extension 规则、无线监管域/蜂窝信息尚未实现;具体采集边界见上文。
 - 本工具检测「痕迹存在性」;痕迹缺失不等于无痕迹(见 C12 采集完整性旁证)
 
 ## 版本

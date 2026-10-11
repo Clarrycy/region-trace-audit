@@ -110,6 +110,24 @@ _m_url() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+has_text() { printf '%s' "$1" | grep -q '[^[:space:]]'; }
+
+# GNU/BSD stat: validate numeric output (GNU stat -f prints filesystem metadata).
+fs_mtime() (
+  _mt=$(stat -c %Y "$1" 2>/dev/null) || _mt=""
+  case "$_mt" in ''|*[!0-9]*) _mt=$(stat -f %m "$1" 2>/dev/null) || _mt="" ;; esac
+  case "$_mt" in ''|*[!0-9]*) return 1 ;; *) printf '%s\n' "$_mt" ;; esac
+)
+
+# Consume newline-delimited paths without splitting spaces, quotes or backslashes.
+# Filenames containing a newline remain outside this bounded sampling format.
+file_mtimes() (
+  while IFS= read -r _mf; do
+    [ -f "$_mf" ] && fs_mtime "$_mf"
+  done
+  :
+)
+
 # 文件时间戳(birth 优先,回退 mtime;GNU/BSD 兼容;空=不可得)
 fs_btime() {
   _t=""
@@ -121,7 +139,7 @@ fs_btime() {
     _t=$(stat -c %Y "$1" 2>/dev/null) || _t=""
     case "$_t" in ""|0) _t=$(stat -f %m "$1" 2>/dev/null) || _t="" ;; esac
   esac
-  case "$_t" in ""|0) printf '' ;; *) printf '%s' "$_t" ;;
+  case "$_t" in ""|0|*[!0-9]*) printf '' ;; *) printf '%s' "$_t" ;;
   esac
 }
 

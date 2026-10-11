@@ -22,7 +22,7 @@ PS_SNAP=""                                      # 进程快照(ps_filtered 数�
 detect_platform() {
   PLATFORM="linux"; PLATFORM_NOTE=""
   case "$(uname -s)" in
-    Darwin) PLATFORM="macos"; PLATFORM_NOTE="macOS(基础检测,完整适配 v0.5)" ;;
+    Darwin) PLATFORM="macos"; PLATFORM_NOTE="macOS(原生只读采集;不适用项显式跳过)" ;;
     MINGW*|MSYS*) PLATFORM="msys"; PLATFORM_NOTE="MSYS/Git Bash(/proc 不全,尽力降级)" ;;
     Linux)
       if grep -qi microsoft /proc/version 2>/dev/null; then
@@ -70,8 +70,8 @@ collector_context() {
     _pn=$(ps -o comm= -p "$_pp" 2>/dev/null | awk 'NR==1{print $1}' 2>/dev/null)
     [ -z "$_pn" ] && break
     PARENT_CHAIN="${PARENT_CHAIN:+$PARENT_CHAIN → }$_pn"
-    case "$_pn" in
-      sshd)          IN_SSH_CHAIN=1 ;;
+    case "${_pn##*/}" in
+      sshd|sshd-session) IN_SSH_CHAIN=1 ;;
       tmux*|screen*) IN_MUX=1 ;;
     esac
     _p=$_pp; _i=$((_i+1))
@@ -82,16 +82,18 @@ collector_context() {
 
 # 网络上下文(出口注记用;本地操作,不外联)
 net_context() {
-  if have ip; then
+  if [ "$PLATFORM" = macos ] && have route; then
+    _rt=$(route -n get 1.1.1.1 2>/dev/null)
+    ROUTE_IFACE=$(printf '%s' "$_rt" | awk '$1=="interface:" {print $2}')
+    ROUTE_GW=$(printf '%s' "$_rt" | awk '$1=="gateway:" {print $2}')
+    if [ -n "$ROUTE_IFACE" ] && have ifconfig; then
+      ROUTE_SRC=$(ifconfig "$ROUTE_IFACE" 2>/dev/null | awk '$1=="inet" {print $2; exit}')
+    fi
+  elif have ip; then
     _rt=$(ip route get 1.1.1.1 2>/dev/null | head -n 1)
     ROUTE_IFACE=$(printf '%s' "$_rt" | sed -n 's/.* dev \([^ ]*\).*/\1/p')
     ROUTE_SRC=$(printf '%s' "$_rt" | sed -n 's/.* src \([0-9a-fA-F.:]*\).*/\1/p')
     ROUTE_GW=$(printf '%s' "$_rt" | sed -n 's/.* via \([0-9a-fA-F.:]*\).*/\1/p')
-  elif [ "$PLATFORM" = macos ] && have route; then
-    _rt=$(route -n get 1.1.1.1 2>/dev/null)
-    ROUTE_IFACE=$(printf '%s' "$_rt" | sed -n 's/.*interface: //p')
-    ROUTE_SRC=$(printf '%s' "$_rt" | sed -n 's/.*local address: //p')
-    ROUTE_GW=$(printf '%s' "$_rt" | sed -n 's/.*gateway: //p')
   elif [ -r /proc/net/route ]; then
     # 回退:默认路由(Destination=00000000)的网关小端 hex + 接口名
     _line=$(awk '$2=="00000000"{print $1, $3; exit}' /proc/net/route 2>/dev/null)
@@ -102,7 +104,7 @@ net_context() {
     have hostname && ROUTE_SRC=$(hostname -I 2>/dev/null | awk '{print $1}')
   fi
   case "$ROUTE_IFACE" in
-    tun*|tap*|wg*|ppp*|tailscale*) NET_ANNOT="经隧道接口 $ROUTE_IFACE" ;;
+    tun*|utun*|tap*|wg*|ppp*|tailscale*) NET_ANNOT="经隧道接口 $ROUTE_IFACE" ;;
   esac
   if [ -n "${http_proxy:-}${https_proxy:-}${HTTP_PROXY:-}${HTTPS_PROXY:-}${all_proxy:-}" ]; then
     NET_ANNOT="${NET_ANNOT:+$NET_ANNOT;}经环境代理"

@@ -87,7 +87,7 @@ check_c9() {
   fi
   if [ -n "$_pkg_list" ]; then
     _ime=$(printf '%s' "$_pkg_list" | grep -iE "$CN_SOFT_PKG_RE" | head -n 6 | tr '\n' ' ')
-    if [ -n "${_ime// /}" ]; then
+    if has_text "$_ime"; then
       report SUSPICIOUS mirror/cn-apps "已安装国内软件/输入法: $_ime"
     else
       report CLEAN mirror/cn-apps "包列表未命中国内软件表"
@@ -97,7 +97,7 @@ check_c9() {
   fi
   if [ -d /usr/share/fonts ]; then
     _fnt=$(ls /usr/share/fonts 2>/dev/null | grep -iE "$CJK_FONT_RE" | head -n 4 | tr '\n' ' ')
-    if [ -n "${_fnt// /}" ]; then
+    if has_text "$_fnt"; then
       report SUSPICIOUS mirror/cjk-fonts "CJK 字体已安装: $_fnt(弱证据)"
     else
       report CLEAN mirror/cjk-fonts "未见 CJK 字体目录"

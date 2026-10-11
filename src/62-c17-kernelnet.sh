@@ -5,6 +5,28 @@
 check_c17() {
   hdr "C17 kernelnet · 内核、命名空间与网络数据面"
 
+  if [ "$PLATFORM" = macos ]; then
+    report INFO kernel/scope "macOS 当前主机网络视图;Linux netns/cgroup/LSM/seccomp 不适用,不据此推断未受沙箱限制"
+    _ifs=$(ifconfig -l 2>/dev/null)
+    if [ -n "$_ifs" ]; then
+      report INFO kernel/ifaces "可见网络接口: $_ifs(utun 为隧道,不单凭接口名推断物理位置)"
+    else
+      report SKIP kernel/ifaces "(ifconfig 不可用/无权限)"
+    fi
+    if [ -n "$ROUTE_IFACE" ]; then
+      report INFO kernel/routes "到探测目标的路由接口 $ROUTE_IFACE;网关 $(mask_ip "${ROUTE_GW:-未知}")"
+    else
+      report SKIP kernel/routes "(route 查询不可用/无路由)"
+    fi
+    _forward=$(sysctl -n net.inet.ip.forwarding 2>/dev/null)
+    case "$_forward" in
+      0|1) report INFO kernel/ip-forward "IPv4 转发=$_forward(仅拓扑角色)" ;;
+      *) report SKIP kernel/ip-forward "(sysctl 不可读)" ;;
+    esac
+    report SKIP kernel/firewall "(未读取需额外权限的 PF 规则;不声明无透明代理)"
+    return
+  fi
+
   # ── LSM ──
   _lsm=$(cat /sys/kernel/security/lsm 2>/dev/null)
   if [ -n "$_lsm" ]; then

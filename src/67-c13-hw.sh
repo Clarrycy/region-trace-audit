@@ -6,6 +6,27 @@
 check_c13() {
   hdr "C13 hw · 硬件、DMI 与无线/蜂窝"
 
+  if [ "$PLATFORM" = macos ]; then
+    _model=$(sysctl -n hw.model 2>/dev/null)
+    _cpu=$(sysctl -n machdep.cpu.brand_string 2>/dev/null)
+    if [ -n "$_model" ]; then report INFO hw/model "Mac 型号: $_model(不读取序列号/UUID)"
+    else report SKIP hw/model "(hw.model 不可读)"; fi
+    if [ -n "$_cpu" ]; then report INFO hw/cpu "CPU: $_cpu"
+    else report SKIP hw/cpu "(CPU 品牌不可读)"; fi
+    _wifi=$(mac_wifi_interfaces)
+    if [ -n "$_wifi" ]; then
+      report INFO hw/wireless "Wi-Fi 硬件接口: $(printf '%s' "$_wifi" | tr '\n' ' ')(不读取 SSID/BSSID,不代表已关联)"
+    else
+      report SKIP hw/wireless "(networksetup 无可见 Wi-Fi 硬件接口,不据此认定无无线硬件)"
+    fi
+    if [ "$RADIO" = 1 ]; then
+      report SKIP hw/radio "(macOS 暂无稳定的无提权监管域/蜂窝采集接口;不调用已弃用 airport 或申请定位权限)"
+    else
+      report SKIP hw/radio "(默认关闭;macOS 监管域/蜂窝采集尚不支持)"
+    fi
+    return
+  fi
+
   # ── DMI 品牌(只读 vendor/product_name;不读 serial/UUID) ──
   if [ -r /sys/class/dmi/id/product_name ]; then
     _pv=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)

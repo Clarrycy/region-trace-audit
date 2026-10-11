@@ -78,8 +78,12 @@ check_c8() {
   # ── localedef / man / 键盘 / hostname / RTC ──
   if have locale; then
     _lc=$(locale -a 2>/dev/null | grep -iE '^zh_(CN|HK|MO)' | head -n 4 | tr '\n' ' ')
-    if [ -n "${_lc// /}" ]; then
-      report SUSPICIOUS locale/localedef "已生成中文 locale: $_lc(文化习惯类信号)"
+    if has_text "$_lc"; then
+      if [ "$PLATFORM" = macos ]; then
+        report INFO locale/localedef "系统提供中文 locale: $_lc(macOS 内置可用列表,不代表用户启用;偏好见 macos 类)"
+      else
+        report SUSPICIOUS locale/localedef "已生成中文 locale: $_lc(文化习惯类信号)"
+      fi
     else
       report CLEAN locale/localedef "未生成 zh_CN/HK/MO locale"
     fi

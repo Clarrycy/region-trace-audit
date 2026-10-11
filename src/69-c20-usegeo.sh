@@ -50,9 +50,9 @@ check_c20() {
         esac ;;
     esac
   done
-  [ -n "${_dghit// /}" ] && _v="$_v
+  has_text "$_dghit" && _v="$_v
   · deep-geo:远程会话对端命中陆港澳:$_dghit"
-  if [ "$DEEP_GEO" = 1 ] && [ -z "${_dghit// /}" ] && [ "$_nrem" -gt 0 ]; then
+  if [ "$DEEP_GEO" = 1 ] && ! has_text "$_dghit" && [ "$_nrem" -gt 0 ]; then
     _v="$_v
   · deep-geo:远程会话对端无陆港澳命中"
   fi
@@ -75,13 +75,14 @@ check_c20() {
     _pjn=$(grep -ciE '^[[:space:]]*(proxyjump|proxycommand)' "$HOME/.ssh/config" 2>/dev/null || true)
     [ "${_pjn:-0}" -gt 0 ] && _bp="$_bp ssh ProxyJump/ProxyCommand x$_pjn(跳板链)"
   fi
-  [ -n "${RD_CONNECTED// /}" ] && _bp="$_bp 远控会话(${RD_CONNECTED})"
-  if [ -n "${_bp// /}" ]; then
+  has_text "$RD_CONNECTED" && _bp="$_bp 远控会话(${RD_CONNECTED})"
+  if has_text "$_bp"; then
     _v="$_v
 - 链路断点:$(printf '%s' "$_bp" | sed 's/^ *//')—— 实际操作者位置在这些链路后不可直接观察,保留全部旁证"
   else
     _v="$_v
-- 链路断点:无(直连可观测链路)"
+- 链路断点:未识别(不代表不存在中继)"
+    [ "$PLATFORM" = macos ] && _v="$_v;macOS SSH socket/远控会话归属未完整采集"
   fi
 
   # ── u7:家族融合与冲突链 ──

@@ -1,0 +1,26 @@
+name: Shell regression tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        shell: [/bin/sh, /bin/bash]
+    runs-on: ${{ matrix.os }}
+    env:
+      TEST_SHELL: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify generated single-file distribution
+        run: |
+          sh build.sh
+          git diff --exit-code -- dist/region-trace-audit.sh
+          "$TEST_SHELL" -n dist/region-trace-audit.sh
+      - name: Native-platform fixtures (offline)
+        run: python3 tests/test-macos.py
+      - name: Existing JSON and time regressions
+        run: |
+          sh tests/test-json-injection.sh
+          sh tests/test-time-compound.sh
