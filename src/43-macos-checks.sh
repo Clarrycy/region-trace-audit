@@ -151,15 +151,15 @@ mac_check_remote_desktop() {
       [ "$_rd_conn" -gt 0 ] && OVERLAY_BREAKS="$OVERLAY_BREAKS $_rd_name(活动传输,交互控制未确认)"
     fi
   done <<'EOF_RD'
-Apple Screen Sharing;com\.apple\.(screensharing|RemoteDesktop);(^|[ /])(screensharingd|screensharingagent|ardagent)( |$);(^|\.)screensharing(\.|$)
+Apple Screen Sharing;com[.]apple[.](screensharing|RemoteDesktop);(^|[ /])(screensharingd|screensharingagent|ardagent)( |$);(^|[.])screensharing([.]|$)
 RustDesk;rustdesk|flutter_hbb;(^|[ /])rustdesk( |$);rustdesk|flutter_hbb
 AnyDesk;anydesk;(^|[ /])anydesk( |$);anydesk
 TeamViewer;teamviewer;(^|[ /])teamviewer[^/]*( |$);teamviewer
-ToDesk;(^|[.|])todesk([.|]|$);(^|[ /])todesk(_service|_daemon)?( |$);(^|\.)todesk(\.|$)
+ToDesk;(^|[.|])todesk([.|]|$);(^|[ /])todesk(_service|_daemon)?( |$);(^|[.])todesk([.]|$)
 Sunlogin;sunlogin;(^|[ /])sunlogin[^/]*( |$);sunlogin
 NoMachine;nomachine;(^|[ /])(nxserver|nxnode|nxplayer)( |$);nomachine
 Chrome Remote Desktop;chromeremotedesktop;(^|[ /])chrome_remote_desktop[^/]*( |$);chromoting
-Parsec;(^|[.|])parsec(gaming)?([.|]|$);(^|[ /])parsec( |$)|/parsec\.app/contents/macos/parsecd( |$);(^|\.)parsec(gaming)?(\.|$)
+Parsec;(^|[.|])parsec(gaming)?([.|]|$);(^|[ /])parsec( |$)|/parsec[.]app/contents/macos/parsecd( |$);(^|[.])parsec(gaming)?([.]|$)
 EOF_RD
   if [ "$_rd_any" = 0 ]; then
     if [ -n "$_rd_ps" ] && [ "$MAC_SOCKETS_OK" = 1 ]; then
