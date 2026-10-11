@@ -82,7 +82,7 @@ check_c20() {
   else
     _v="$_v
 - 链路断点:未识别(不代表不存在中继)"
-    [ "$PLATFORM" = macos ] && _v="$_v;macOS SSH socket/远控会话归属未完整采集"
+    [ "$PLATFORM" = macos ] && _v="$_v;macOS socket 归属限于 lsof 可见进程,远控 TCP 传输不等同交互控制"
   fi
 
   # ── u7:家族融合与冲突链 ──
