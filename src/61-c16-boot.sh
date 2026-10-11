@@ -5,6 +5,17 @@
 check_c16() {
   hdr "C16 boot · 引导、初始化与持久化来源"
 
+  if [ "$PLATFORM" = macos ]; then
+    _pid1=$(ps -p 1 -o comm= 2>/dev/null)
+    if [ -n "$_pid1" ]; then
+      report INFO boot/pid1 "PID 1 = ${_pid1##*/}(macOS 服务管理器)"
+    else
+      report SKIP boot/pid1 "(PID 1 信息不可读)"
+    fi
+    report SKIP boot/linux-init "(macOS 不适用 Linux cmdline/cloud-init/systemd/initramfs 检测;launchd 见 macos 类)"
+    return
+  fi
+
   case "$PLATFORM" in
     container-*)
       report SKIP boot/all "(容器环境,引导链与固件不可见)"
@@ -98,7 +109,7 @@ check_c16() {
   fi
   if [ -d "$HOME/.config/autostart" ]; then
     _au=$(ls "$HOME/.config/autostart" 2>/dev/null | head -n 6 | tr '\n' ' ')
-    [ -n "${_au// /}" ] && report INFO boot/autostart "XDG autostart: $_au(用户级持久化)"
+    has_text "$_au" && report INFO boot/autostart "XDG autostart: $_au(用户级持久化)"
   fi
 
   # ── initramfs ──

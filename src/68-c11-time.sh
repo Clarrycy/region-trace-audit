@@ -29,7 +29,7 @@ check_c11() {
     _e1=$(last -F -n 400 2>/dev/null | awk -v off=$OFFMIN '
       function mke(y,mo,d,h,mi,s, era,yoe,doy,doe,days) {
         if (mo<=2){y--}; era=int((y>=0?y:y-399)/400); yoe=y-era*400
-        doy=int((153*(mo-3)+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
+        doy=int((153*(mo+(mo>2?-3:9))+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
         days=era*146097+doe-719468
         return days*86400+h*3600+mi*60+s-off*60
       }
@@ -79,22 +79,28 @@ $(sed -n 's/^: \([0-9]\{9,\}\):.*/\1/p' "$_h2z")"
     [ -d "$_base" ] || continue
     _files=$(find "$_base" -name '*.jsonl' -mtime -120 2>/dev/null | head -n 150)
     [ -z "$_files" ] && continue
-    _e3=$(printf '%s\n' "$_files" | LC_ALL=C xargs -r awk '
+    _e3=$(while IFS= read -r _af; do
+      LC_ALL=C awk '
       function mke(y,mo,d,h,mi,s, era,yoe,doy,doe,days) {
         if (mo<=2){y--}; era=int((y>=0?y:y-399)/400); yoe=y-era*400
-        doy=int((153*(mo-3)+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
+        doy=int((153*(mo+(mo>2?-3:9))+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
         days=era*146097+doe-719468
         return days*86400+h*3600+mi*60+s
       }
       {
-        if ($0 !~ /"role":"user"/ && $0 !~ /"type":"user"/) next
+        if ($0 !~ /"role"[[:space:]]*:[[:space:]]*"user"/ && $0 !~ /"type"[[:space:]]*:[[:space:]]*"user"/) next
         if ($0 ~ /"tool_result"/ || $0 ~ /"function_call_output"/ || \
-            $0 ~ /"toolUseResult"/ || $0 ~ /"isMeta":true/ || $0 ~ /"isSidechain":true/) next
-        if (!match($0, /"timestamp":"[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/)) next
-        ts=substr($0, RSTART+13, RLENGTH-13)
+            $0 ~ /"toolUseResult"/ || $0 ~ /"isMeta"[[:space:]]*:[[:space:]]*true/ || $0 ~ /"isSidechain"[[:space:]]*:[[:space:]]*true/) next
+        if (!match($0, /"timestamp"[[:space:]]*:[[:space:]]*"[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/)) next
+        ts=substr($0, RSTART, RLENGTH)
+        sub(/^[^:]+:[[:space:]]*"/, "", ts)
         split(ts, a, /[-T:]/)
         print mke(a[1]+0, a[2]+0, a[3]+0, a[4]+0, a[5]+0, a[6]+0)
-      }' 2>/dev/null)
+      }' "$_af" 2>/dev/null
+    done <<EOF
+$_files
+EOF
+    )
     _c=$(printf '%s\n' "$_e3" | grep -c '^[0-9]' || true)
     if [ "${_c:-0}" -gt 0 ]; then _n3=$((_n3+_c)); _ev="$_ev
 $_e3"; fi
@@ -107,11 +113,11 @@ $_e3"; fi
   for _d in "$HOME/Downloads" "$HOME/Documents" "$HOME/Desktop"; do
     [ -d "$_d" ] || continue
     _e5="$_e5
-$(find "$_d" -maxdepth 2 -type f -mtime -120 2>/dev/null | head -n 200 | xargs -r stat -c '%Y' 2>/dev/null)"
+$(find "$_d" -maxdepth 2 -type f -mtime -120 2>/dev/null | head -n 200 | file_mtimes)"
   done
   for _f in "$HOME/.bashrc" "$HOME/.gitconfig" "$HOME/.ssh/config" "$HOME/.config/tmux/tmux.conf"; do
     [ -f "$_f" ] && [ -n "$(find "$_f" -mtime -120 2>/dev/null)" ] && _e5="$_e5
-$(stat -c '%Y' "$_f" 2>/dev/null)"
+$(fs_mtime "$_f")"
   done
   _n5=$(printf '%s\n' "$_e5" | grep -c '^[0-9]' || true)
   [ "${_n5:-0}" -gt 0 ] && _ev="$_ev
@@ -123,32 +129,24 @@ $_e5"
   if have git; then
     _mymail=$(git config --global user.email 2>/dev/null)
     _repos=$(find "$HOME" -maxdepth 3 -name .git -type d 2>/dev/null | head -n 6)
-    for _r in $_repos; do
+    while IFS= read -r _r; do
+      [ -n "$_r" ] || continue
       _d=${_r%/.git}
       if [ -n "$_mymail" ]; then
-        _gl=$(git -C "$_d" log --all --author="$_mymail" --pretty='%ad' --date=iso -n 500 2>/dev/null)
+        _gl=$(git -C "$_d" log --all --author="$_mymail" --pretty='%at %ai' -n 500 2>/dev/null)
       else
-        _gl=$(git -C "$_d" log --all --pretty='%ad' --date=iso -n 500 2>/dev/null)
+        _gl=$(git -C "$_d" log --all --pretty='%at %ai' -n 500 2>/dev/null)
       fi
       [ -z "$_gl" ] && continue
       _tz7="$_tz7
 $(printf '%s\n' "$_gl" | grep -oE '[+-][0-9]{4}$' | sort | uniq -c)"
-      _e7=$(printf '%s\n' "$_gl" | awk -v off=0 '
-        function mke(y,mo,d,h,mi,s,om, era,yoe,doy,doe,days) {
-          if (mo<=2){y--}; era=int((y>=0?y:y-399)/400); yoe=y-era*400
-          doy=int((153*(mo-3)+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
-          days=era*146097+doe-719468
-          return days*86400+h*3600+mi*60+s-om*60
-        }
-        {
-          if (split($0, a, /[-: ]/) < 6) next
-          om = (a[7] ~ /^[+-]/) ? (substr(a[7],2,2)*60+substr(a[7],4,2)) * (a[7]~/^-/?-1:1) : 0
-          print mke(a[1]+0, a[2]+0, a[3]+0, a[4]+0, a[5]+0, a[6]+0, om)
-        }')
+      _e7=$(printf '%s\n' "$_gl" | awk '$1 ~ /^[0-9]+$/ {print $1}')
       _c=$(printf '%s\n' "$_e7" | grep -c '^[0-9]' || true)
       [ "${_c:-0}" -gt 0 ] && { _n7=$((_n7+_c)); _ev="$_ev
 $_e7"; }
-    done
+    done <<EOF
+$_repos
+EOF
   fi
   _src_n="$_src_n git提交=$_n7"
 
@@ -158,7 +156,7 @@ $_e7"; }
     _e9=$(dnf history list --reverse 2>/dev/null | awk -v off=$OFFMIN -F'|' '
       function mke(y,mo,d,h,mi,s,om, era,yoe,doy,doe,days) {
         if (mo<=2){y--}; era=int((y>=0?y:y-399)/400); yoe=y-era*400
-        doy=int((153*(mo-3)+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
+        doy=int((153*(mo+(mo>2?-3:9))+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
         days=era*146097+doe-719468
         return days*86400+h*3600+mi*60+s-om*60
       }
@@ -170,7 +168,7 @@ $_e7"; }
     _e9=$(sed -n 's/^Start-Date: \([0-9-]\{10\}\)  \([0-9:]\{8\}\).*/\1 \2/p' /var/log/apt/history.log | awk -v off=$OFFMIN '
       function mke(y,mo,d,h,mi,s,om, era,yoe,doy,doe,days) {
         if (mo<=2){y--}; era=int((y>=0?y:y-399)/400); yoe=y-era*400
-        doy=int((153*(mo-3)+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
+        doy=int((153*(mo+(mo>2?-3:9))+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
         days=era*146097+doe-719468
         return days*86400+h*3600+mi*60+s-om*60
       }{ split($1,a,"-"); split($2,b,":"); print mke(a[1]+0,a[2]+0,a[3]+0,b[1]+0,b[2]+0,b[3]+0, off) }')
@@ -185,12 +183,15 @@ $_e9"
   for _f in "$HOME/.config/fcitx/profile" "$HOME/.local/share/fcitx5" "$HOME/.config/ibus"; do
     if [ -e "$_f" ]; then
       _e10="$_e10
-$(find "$_f" -type f -mtime -120 2>/dev/null | head -n 30 | xargs -r stat -c '%Y' 2>/dev/null)"
+$(find "$_f" -type f -mtime -120 2>/dev/null | head -n 30 | file_mtimes)"
     fi
   done
-  for _f in "$HOME/.config/google-chrome/Default/History" "$HOME/.mozilla/firefox"/*/"places.sqlite"; do
+  for _f in "$HOME/.config/google-chrome/Default/History" "$HOME/.mozilla/firefox"/*/"places.sqlite" \
+    "$HOME/Library/Application Support/Google/Chrome"/*/History \
+    "$HOME/Library/Application Support/Microsoft Edge"/*/History \
+    "$HOME/Library/Application Support/Firefox/Profiles"/*/places.sqlite; do
     [ -f "$_f" ] && _e10="$_e10
-$(stat -c '%Y' "$_f" 2>/dev/null)"
+$(fs_mtime "$_f")"
   done
   _n10=$(printf '%s\n' "$_e10" | grep -c '^[0-9]' || true)
   [ "${_n10:-0}" -gt 0 ] && _ev="$_ev
@@ -259,7 +260,7 @@ $_e10"
   if [ "$BRIEF" != 1 ] && [ "${JSON:-0}" != 1 ]; then
     printf '%s   UTC 小时分布(30 格满幅,簇首 %d 个/原始 %d 个;%s)%s\n' "$C_DIM" "$_ncl" "$_n_raw" "$(printf '%s' "$_src_n" | sed 's/^ //')" "$C_RST"
     printf '%s\n' "$_res" | tail -n 24 | awk -v c="$C_DIM" -v r="$C_RST" \
-      '{printf "%s   %s %s%s\n", c, $1, substr("────────────────────────────", 1, $2), r}'
+      '{printf "%s   %s %s%s\n", c, $1, substr("------------------------------", 1, $2), r}'
   fi
 
   # ── 判定 1:作息推断 vs 系统时区设置(一致性检验) ──
@@ -280,7 +281,9 @@ $_e10"
     near)     _e8desc="东/东南亚工作节奏段(UTC+${_olo}–${_ohi};+7 时区如曼谷/雅加达/珀斯亦可解释)" ;;
     *)        _e8desc="" ;;
   esac
-  report INFO time/infer "作息推断 UTC+${_offs}(置信${_conf};最佳得分 $_bs,次优 $_b2;周末占比 $(awk "BEGIN{printf \"%.0f%%\", $_we*100}"))${_e8desc:+ · $_e8desc}"
+  _we_pct=$(awk -v fraction="$_we" 'BEGIN {printf "%.0f%%", fraction*100}')
+  report INFO time/infer "作息推断 UTC+${_offs}(置信${_conf};最佳得分 $_bs,次优 $_b2;周末占比 $_we_pct)${_e8desc:+ · $_e8desc}"
+
   _tz_hit=""; case "${TZ_CLASS:-}" in CN|HKMO) _tz_hit=hit ;; esac
   if [ -z "${TZ_NAME:-}" ]; then
     report SKIP time/tz-consist "(系统时区不可探测,无法与作息比对)"
@@ -313,7 +316,7 @@ $_e10"
   _cal=$(printf '%s\n' "$_cl" | awk -v off="$_off8" -v hol="$CN_HOLIDAYS" -v mk="$CN_MAKEUP" '
     function dfc(y,mo,d, era,yoe,doy,doe) {
       if (mo<=2){y--}; era=int((y>=0?y:y-399)/400); yoe=y-era*400
-      doy=int((153*(mo-3)+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
+      doy=int((153*(mo+(mo>2?-3:9))+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
       return era*146097+doe-719468
     }
     function cfd(z, era,doe,yoe,y,doy,mp,dd) {

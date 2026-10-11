@@ -19,10 +19,12 @@ check_c5() {
 
   # ── 接口分类 ──
   _vpn=""; _cni=""
-  for _i in $(ls /sys/class/net 2>/dev/null); do
+  if [ "$PLATFORM" = macos ]; then _ifnames=$(ifconfig -l 2>/dev/null)
+  else _ifnames=$(ls /sys/class/net 2>/dev/null); fi
+  for _i in $_ifnames; do
     case "$_i" in
       lo|eth*|ens*|enp*|eno*|enx*|wlan*|wlp*|wwan*|wwp*|bond*|br0|usb*) : ;;
-      tun*|tap*|wg*|tailscale*|zt*|nordlynx*|ppp*|CloudflareWARP*|warp*) _vpn="$_vpn $_i" ;;
+      utun*|tun*|tap*|wg*|tailscale*|zt*|nordlynx*|ppp*|CloudflareWARP*|warp*) _vpn="$_vpn $_i" ;;
       docker*|veth*|br-*|cni*|cali*|flannel*|weave*|kube*|virbr*|dummy*|podman*) _cni="$_cni $_i" ;;
     esac
   done
@@ -32,7 +34,7 @@ check_c5() {
     case "$_i" in ppp*) report SUSPICIOUS proxy/pppoe "PPPoE 会话接口 $_i(拨号线路特征)" ;; esac
   done
   case "$ROUTE_IFACE" in
-    tun*|tap*|wg*|ppp*|tailscale*)
+    utun*|tun*|tap*|wg*|ppp*|tailscale*)
       report INFO proxy/default-route "默认路由经隧道接口 $ROUTE_IFACE(出口探测经此接口)" ;;
     *) report INFO proxy/default-route "默认路由接口: ${ROUTE_IFACE:-未知}" ;;
   esac
@@ -51,7 +53,9 @@ check_c5() {
   done
 
   # ── 透明代理/分流规则(需 root;无权限时跳过) ──
-  if have iptables && iptables -t nat -L -n >/dev/null 2>&1; then
+  if [ "$PLATFORM" = macos ]; then
+    report SKIP proxy/firewall "(macOS PF/Network Extension 规则未采集,不以缺少 iptables 推断无透明代理)"
+  elif have iptables && iptables -t nat -L -n >/dev/null 2>&1; then
     if iptables -t nat -L -n 2>/dev/null | grep -qE 'REDIRECT|TPROXY'; then
       report SUSPICIOUS proxy/transparent "iptables NAT 表含 REDIRECT/TPROXY(透明代理/分流)"
     fi

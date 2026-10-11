@@ -3,8 +3,9 @@
 # 背景:2026-10-09 精化设计(作息单条不升暴露,+7 歧义;复合需记录性旁证)
 set -e
 D=$(cd "$(dirname "$0")/.." && pwd)
-FH=/tmp/rta-t2-home
-rm -rf "$FH"; mkdir -p "$FH/bin" "$FH/.claude/projects/p" "$FH/proj"
+FH=$(mktemp -d "${TMPDIR:-/tmp}/rta-time.XXXXXX")
+trap 'rm -rf "$FH"' EXIT HUP INT TERM
+mkdir -p "$FH/bin" "$FH/.claude/projects/p" "$FH/proj"
 printf '#!/bin/sh\nexit 1\n' > "$FH/bin/last"; chmod +x "$FH/bin/last"
 printf '#!/bin/sh\nexit 1\n' > "$FH/bin/dnf"; chmod +x "$FH/bin/dnf"
 # 160 条 AI 用户输入:UTC 02–16(东八 10:00–24:00)→ 区间 [6.0,7.5]、得分 1.0
@@ -17,11 +18,11 @@ mkgit() { # $1 = 时区偏移
   for i in 1 2 3 4 5; do
     echo "c$i" > f.txt; git add -A
     GIT_AUTHOR_DATE="2026-09-1${i}T10:00:00$1" GIT_COMMITTER_DATE="2026-09-1${i}T10:00:00$1" \
-      git commit -qm "c$i" --date="2026-09-1${i}T10:00:00$1"
+      git -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -qm "c$i" --date="2026-09-1${i}T10:00:00$1"
   done
 }
 run() {
-  sed -n '/^check_c11()/,/^}$/p' "$D/src/68-c11-time.sh" > /tmp/rta-c11fn.sh
+  sed -n '/^check_c11()/,/^}$/p' "$D/src/68-c11-time.sh" > "$FH/c11fn.sh"
   HOME=$FH PATH="$FH/bin:$PATH" sh -c '
     cd "'"$D"'"
     BRIEF=0; NOCOLOR=1; REVEAL=0; OFFLINE=0; DEEP_GEO=0; RADIO=0; JSON=0; SECTION=all; HTTP_TOOL=""
@@ -34,7 +35,7 @@ run() {
     . ./src/41-context.sh   >/dev/null 2>&1
     have() { command -v "$1" >/dev/null 2>&1; }
     TZ_NAME=Asia/Tokyo; TZ_CLASS=OTHER; EGRESS_CC=JP
-    . /tmp/rta-c11fn.sh
+    . "$HOME/c11fn.sh"
     check_c11' 2>&1
 }
 mkgit +0800

@@ -16,10 +16,16 @@ check_c15() {
       _nfound=$((_nfound+1))
       if [ "$_p" = "bin-only" ]; then
         report INFO "browser/$1" "已安装($3;无用户 profile —— 未使用或他人环境)"
-      elif ls "$2"/Default "$2"/Profile* "$2"/profiles.ini >/dev/null 2>&1; then
-        report INFO "browser/$1" "存在用户 profile($2)"
       else
-        report INFO "browser/$1" "目录存在但无用户数据($2 —— 残留/未完成初始化)"
+        _profile=0
+        for _candidate in "$2"/Default "$2"/Profile* "$2"/profiles.ini; do
+          [ -e "$_candidate" ] && _profile=1
+        done
+        if [ "$_profile" = 1 ]; then
+          report INFO "browser/$1" "存在用户 profile($2)"
+        else
+          report INFO "browser/$1" "目录存在但未发现可见 profile($2;可能为空或权限受限)"
+        fi
       fi
     fi
   }
@@ -57,10 +63,10 @@ check_c15() {
   if [ -d "$_ffdir" ] && [ -r "$_ffdir/profiles.ini" ]; then
     _nprof=0; _zh=0; _cneng=0
     _prof_list=$(sed -n 's/^Path=//p' "$_ffdir/profiles.ini" 2>/dev/null)
-    while read -r _pr; do
+    while IFS= read -r _pr; do
       [ -z "${_pr:-}" ] && continue
       case "$_pr" in \~/*) continue ;; esac
-      _pf="$_ffdir/$_pr"
+      case "$_pr" in /*) _pf=$_pr ;; *) _pf="$_ffdir/$_pr" ;; esac
       [ -d "$_pf" ] || continue
       _nprof=$((_nprof+1))
       if [ -r "$_pf/prefs.js" ]; then
@@ -84,13 +90,22 @@ EOF
 
   # ── Chromium 系(Chrome/Chromium/Brave/Edge/Vivaldi):Preferences JSON ──
   if [ "$PLATFORM" = macos ]; then
-    _cp_scan="Google/Chrome Chromium BraveSoftware/Brave-Browser 'Microsoft Edge' Vivaldi"
+    _cp_scan="Google/Chrome
+Chromium
+BraveSoftware/Brave-Browser
+Microsoft Edge
+Vivaldi"
     _cp_root="$HOME/Library/Application Support"
   else
-    _cp_scan="google-chrome chromium BraveSoftware/Brave-Browser microsoft-edge vivaldi opera"
+    _cp_scan="google-chrome
+chromium
+BraveSoftware/Brave-Browser
+microsoft-edge
+vivaldi
+opera"
     _cp_root="$HOME/.config"
   fi
-  for _cp in $_cp_scan; do
+  while IFS= read -r _cp; do
     _bdir="$_cp_root/$_cp"
     [ -d "$_bdir" ] || continue
     _bname=$(printf '%s' "$_cp" | sed 's|.*/||')
@@ -101,7 +116,7 @@ EOF
       [ -r "$_prof/Preferences" ] || continue
       _pj=$(head -c 2000000 "$_prof/Preferences" 2>/dev/null)
       # 默认搜索引擎(Preferences 内 default_search_provider_data.short_name)
-      _eng=$(printf '%s' "$_pj" | sed 's/.*"default_search_provider_data"[^S]*"short_name":"\([^"]*\)".*/\1/p' | head -c 40)
+      _eng=$(printf '%s' "$_pj" | sed -n 's/.*"default_search_provider_data"[^S]*"short_name":"\([^"]*\)".*/\1/p' | head -c 40)
       case "${_eng:-}" in
         *百度*|*[Bb]aidu*|*[Ss]ogou*|*搜狗*|*360*|*so\.com*)
           report SUSPICIOUS "browser/$_bname-search" "$_bname 默认搜索引擎: $_eng(国内引擎,文化习惯类信号)" ;;
@@ -114,39 +129,43 @@ EOF
       esac
     done
     [ "$_nprof" -gt 0 ] && report INFO "browser/$_bname" "$_bname profile $_nprof 个(已检查搜索引擎与语言设置)"
-  done
+  done <<EOF
+$_cp_scan
+EOF
 
   # ── 历史/书签国内域名计数(只计数;上限 30MB/文件,防大文件耗时) ──
   _hcount=0
   _h_scan() { # $1=文件 $2=浏览器名
     [ -f "$1" ] || return 0
+    if [ ! -r "$1" ]; then
+      report SKIP "browser/$2-history" "(历史文件不可读;macOS 权限/TCC 限制可能导致跳过)"
+      return
+    fi
     _c=$(head -c 30000000 "$1" 2>/dev/null | LC_ALL=C grep -aoE 'https?://[a-zA-Z0-9.-]+' \
          | sed 's|https\?://||' | grep -cE "$CN_DOMAIN_RE" || true)
     _c=${_c:-0}
     if [ "$_c" -gt 0 ]; then
       _lvl=INFO; [ "$_c" -ge 10 ] && _lvl=SUSPICIOUS
-      report "$_lvl" "browser/$2-history" "$2 历史含国内域名记录 $_c 条(仅计数,不读取 URL 明文;≥10 判可疑)"
+      report "$_lvl" "browser/$2-history" "$2 历史文件前 30MB 匹配国内域名 $_c 次(原始字节近似计数,非访问次数;不输出 URL/查询词;≥10 判可疑)"
       _hcount=$((_hcount+1))
     else
-      report CLEAN "browser/$2-history" "$2 历史无国内域名记录(或历史为空)"
+      report CLEAN "browser/$2-history" "$2 历史文件前 30MB 未匹配国内域名(不代表全部历史无记录)"
     fi
   }
   if [ -d "$_ffdir" ]; then
-    for _pr in $(sed -n 's/^Path=//p' "$_ffdir/profiles.ini" 2>/dev/null); do
+    while IFS= read -r _pr; do
       case "$_pr" in \~/*) continue ;; esac
-      _h_scan "$_ffdir/$_pr/places.sqlite" firefox
-    done
+      case "$_pr" in /*) _pf=$_pr ;; *) _pf="$_ffdir/$_pr" ;; esac
+      _h_scan "$_pf/places.sqlite" firefox
+    done <<EOF
+$(sed -n 's/^Path=//p' "$_ffdir/profiles.ini" 2>/dev/null)
+EOF
   fi
-  if [ "$PLATFORM" = macos ]; then
-    _cp_list="Google/Chrome Chromium BraveSoftware/Brave-Browser 'Microsoft Edge' Vivaldi"
-    _cp_base="$HOME/Library/Application Support"
-  else
-    _cp_list="google-chrome chromium BraveSoftware/Brave-Browser microsoft-edge vivaldi opera"
-    _cp_base="$HOME/.config"
-  fi
-  for _cp in $_cp_list; do
-    for _prof in "$_cp_base/$_cp"/Default "$_cp_base/$_cp"/Profile*; do
-      _h_scan "$_prof/History" "$(printf '%s' "$_cp" | sed 's|.*/||')"
+  while IFS= read -r _cp; do
+    for _prof in "$_cp_root/$_cp"/Default "$_cp_root/$_cp"/Profile*; do
+      _h_scan "$_prof/History" "${_cp##*/}"
     done
-  done
+  done <<EOF
+$_cp_scan
+EOF
 }

@@ -5,33 +5,38 @@ check_c12() {
   hdr "C12 anti · 隐藏与伪造痕迹(带上下文修正)"
 
   # ── 登录日志权限矩阵 ──
-  for _f in /var/log/wtmp /var/log/btmp /var/log/lastlog /run/utmp; do
-    if [ ! -e "$_f" ]; then
-      report SKIP anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "(不存在:容器/最小系统常见)"
-      continue
-    fi
-    case "$_f" in
-      /var/log/btmp)
-        # btmp 各发行版默认即不可读(RHEL 600 / Debian 660 root:utmp)
-        [ -r "$_f" ] && report INFO anti/btmp "btmp 可读(少数发行版默认)" \
-                       || report INFO anti/btmp "btmp 不可读(RHEL/Debian 系默认,正常)"
-        continue ;;
-    esac
-    if [ -r "$_f" ]; then
-      report INFO anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 当前用户可读(默认权限)"
-    else
-      # 上下文修正:容器 SKIP;新装 INFO;正常老化系统不可读 = 刻意 → 可疑
-      case "$PLATFORM" in
-        container-*) report SKIP anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 不可读(容器环境)" ;;
-        *)
-          if [ "${INSTALL_AGE_DAYS:-0}" -gt 0 ] && [ "$INSTALL_AGE_DAYS" -lt 30 ]; then
-            report INFO anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 不可读(系统安装 $INSTALL_AGE_DAYS 天,新装可能为部署基线)"
-          else
-            report SUSPICIOUS anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 对当前用户不可读(正常系统应为可读 —— 疑似刻意隐藏)"
-          fi ;;
+  if [ "$PLATFORM" = macos ]; then
+    report SKIP anti/linux-logs "(macOS 不使用此 Linux wtmp/btmp/lastlog/utmp 权限基线;登录记录见 session 类)"
+  else
+    for _f in /var/log/wtmp /var/log/btmp /var/log/lastlog /run/utmp; do
+      if [ ! -e "$_f" ]; then
+        report SKIP anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "(不存在:容器/最小系统常见)"
+        continue
+      fi
+      case "$_f" in
+        /var/log/btmp)
+          # btmp 各发行版默认即不可读(RHEL 600 / Debian 660 root:utmp)
+          [ -r "$_f" ] && report INFO anti/btmp "btmp 可读(少数发行版默认)" \
+                         || report INFO anti/btmp "btmp 不可读(RHEL/Debian 系默认,正常)"
+          continue ;;
       esac
-    fi
-  done
+      if [ -r "$_f" ]; then
+        report INFO anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 当前用户可读(默认权限)"
+      else
+        # 上下文修正:容器 SKIP;新装 INFO;正常老化系统不可读 = 刻意 → 可疑
+        case "$PLATFORM" in
+          container-*) report SKIP anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 不可读(容器环境)" ;;
+          *)
+            if [ "${INSTALL_AGE_DAYS:-0}" -gt 0 ] && [ "$INSTALL_AGE_DAYS" -lt 30 ]; then
+              report INFO anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 不可读(系统安装 $INSTALL_AGE_DAYS 天,新装可能为部署基线)"
+            else
+              report SUSPICIOUS anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 对当前用户不可读(正常系统应为可读 —— 疑似刻意隐藏)"
+            fi ;;
+        esac
+      fi
+    done
+
+  fi
 
   # wtmp 空但 uptime 长
   if [ -r /var/log/wtmp ] && [ ! -s /var/log/wtmp ]; then
@@ -74,7 +79,9 @@ check_c12() {
       _ia="${_ia:+$_ia; }$_d"
     fi
   done
-  if [ -n "$_ia" ]; then
+  if [ "$PLATFORM" = macos ]; then
+    report SKIP anti/unit-inaccessible "(macOS 不使用 systemd InaccessiblePaths)"
+  elif [ -n "$_ia" ]; then
     report SUSPICIOUS anti/unit-inaccessible "systemd unit 含 InaccessiblePaths(wtmp/utmp/proc-net):$_ia"
   else
     report CLEAN anti/unit-inaccessible "可读范围内无 InaccessiblePaths(wtmp/utmp/proc-net)命中"
@@ -83,7 +90,7 @@ check_c12() {
   # 沙箱 wrapper(~/.local/bin 文本脚本含 landlock/bwrap 关键词)
   if [ -d "$HOME/.local/bin" ]; then
     _w=$(grep -rl -iE 'landlock|LANDLOCK|bwrap' "$HOME/.local/bin" 2>/dev/null | head -n 3 | tr '\n' ' ')
-    if [ -n "${_w// /}" ]; then
+    if has_text "$_w"; then
       report SUSPICIOUS anti/sandbox-wrapper "~/.local/bin 存在沙箱 wrapper: $_w(Landlock/bwrap)"
     fi
   fi
@@ -134,7 +141,9 @@ check_c12() {
       fi
     done
   fi
-  if [ -n "$_ptz" ]; then
+  if [ "$PLATFORM" = macos ]; then
+    report SKIP anti/proc-tz "(macOS 无 /proc/PID/environ;不读取完整进程环境以避免凭据采集)"
+  elif [ -n "$_ptz" ]; then
     _ptzval=${_ptz#*:}
     _pc=$(tz_class "$_ptzval")
     case "$_pc" in

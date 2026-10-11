@@ -7,6 +7,9 @@ check_c1() {
   # 发行版与内核
   _pretty="unknown"
   [ -r /etc/os-release ] && _pretty=$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | tr -d '"' | head -n 1)
+  if [ "$PLATFORM" = macos ]; then
+    _pretty="$(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null)"
+  fi
   report INFO sysinfo/os "$_pretty · $(uname -sr) · $(uname -m)"
 
   # 平台判定
@@ -15,10 +18,20 @@ check_c1() {
   # 采集者边界(u0)
   _tty=$(tty 2>/dev/null) || _tty=""
   case "$_tty" in ""|*"not a tty"*) _tty="无tty" ;; *) _tty="${_tty#/dev/}" ;; esac
-  report INFO sysinfo/collector "采集者: uid=$CUR_UID($CUR_USER) · tty=$_tty · 父链: ${PARENT_CHAIN:-?}${IN_SSH_CHAIN:+ [sshd]}${IN_MUX:+ [mux]}"
+  _chain_flags=""
+  [ "$IN_SSH_CHAIN" = 1 ] && _chain_flags="$_chain_flags [sshd]"
+  [ "$IN_MUX" = 1 ] && _chain_flags="$_chain_flags [mux]"
+  report INFO sysinfo/collector "采集者: uid=$CUR_UID($CUR_USER) · tty=$_tty · 父链: ${PARENT_CHAIN:-?}$_chain_flags"
 
   # uptime
-  if [ -r /proc/uptime ]; then
+  if [ "$PLATFORM" = macos ]; then
+    _bt=$(mac_boot_epoch)
+    case "$_bt" in
+      ''|*[!0-9]*) report SKIP sysinfo/uptime "(kern.boottime 不可读)" ;;
+      *) _up=$(($(date +%s) - _bt))
+         report INFO sysinfo/uptime "运行时长: $((_up/86400)) 天 $(((_up%86400)/3600)) 小时(kern.boottime)" ;;
+    esac
+  elif [ -r /proc/uptime ]; then
     _up=$(cut -d. -f1 /proc/uptime)
     report INFO sysinfo/uptime "运行时长: $((_up/86400)) 天 $(((_up%86400)/3600)) 小时"
   else
@@ -26,15 +39,20 @@ check_c1() {
   fi
 
   # 系统安装时间(machine-id 时间估算,与 C12 新装判定共用)
-  _it=$(fs_btime /etc/machine-id)
-  [ -z "$_it" ] && _it=$(fs_btime /lost+found 2>/dev/null)
-  if [ -n "$_it" ] && [ "$_it" != 0 ]; then
-    _now=$(date +%s)
-    INSTALL_AGE_DAYS=$(( (_now - _it) / 86400 ))
-    [ "$INSTALL_AGE_DAYS" -lt 0 ] && INSTALL_AGE_DAYS=0
-    report INFO sysinfo/install-age "系统约安装于 $INSTALL_AGE_DAYS 天前(machine-id 时间估算)"
+  if [ "$PLATFORM" = macos ]; then
+    report SKIP sysinfo/install-age "(macOS 无可靠的只读安装时间依据,不以系统卷文件时间推断)"
   else
-    report SKIP sysinfo/install-age "(无法取 machine-id/lost+found 时间)"
+    _it=$(fs_btime /etc/machine-id)
+    [ -z "$_it" ] && _it=$(fs_btime /lost+found 2>/dev/null)
+    if [ -n "$_it" ] && [ "$_it" != 0 ]; then
+      _now=$(date +%s)
+      INSTALL_AGE_DAYS=$(( (_now - _it) / 86400 ))
+      [ "$INSTALL_AGE_DAYS" -lt 0 ] && INSTALL_AGE_DAYS=0
+      report INFO sysinfo/install-age "系统约安装于 $INSTALL_AGE_DAYS 天前(machine-id 时间估算)"
+    else
+      report SKIP sysinfo/install-age "(无法取 machine-id/lost+found 时间)"
+    fi
+
   fi
 
   # 连接方式
@@ -61,7 +79,7 @@ check_c1() {
       *)   report INFO sysinfo/tcp-cc "拥塞控制 ${_cc:-default}" ;;
     esac
   else
-    report SKIP sysinfo/tcp-cc "(/proc/sys 不可读)"
+    report SKIP sysinfo/tcp-cc "(Linux /proc/sys 检测不适用或不可读)"
   fi
 
   # 登录用户列表

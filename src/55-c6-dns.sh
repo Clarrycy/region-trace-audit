@@ -16,7 +16,11 @@ check_c6() {
     _res=$(resolvectl status 2>/dev/null | grep -oE 'Current DNS Server: [0-9a-fA-F.:]+' | awk '{print $4}' | tr '\n' ' ')
     _resrc="systemd-resolved(resolvectl)"
   fi
-  if [ -z "${_res// /}" ]; then
+  if [ "$PLATFORM" = macos ]; then
+    _res=$(mac_dns_servers | tr '\n' ' ')
+    _resrc="scutil --dns;含 scoped/supplemental 解析器,实际选择取决于域名/接口"
+  fi
+  if ! has_text "$_res"; then
     report SKIP dns/resolvers "(无法确定生效解析器)"
   else
     _masked=""; _lb=0; _nr=0
@@ -41,8 +45,8 @@ check_c6() {
     # 解析器 GeoIP(外联最小集;回环转发器无上游可查)
     _pubres=""
     for _r in $_res; do ip_is_private "$_r" || _pubres="$_pubres $_r"; done
-    if [ -z "${_pubres// /}" ]; then
-      report INFO dns/resolver-geo "解析器为本地回环,上游归属不可见(转发器行为见 proxy 类)"
+    if ! has_text "$_pubres"; then
+      report INFO dns/resolver-geo "解析器为私网/回环/链路本地地址,上游归属不可见(转发器行为见 proxy 类)"
     elif [ "$OFFLINE" != 1 ] && [ -n "$HTTP_TOOL" ]; then
       _cnr=""
       for _r in $_pubres; do
@@ -63,6 +67,7 @@ check_c6() {
   if [ "$OFFLINE" = 1 ]; then
     report SKIP dns/pollution "(--offline:跳过外联 DNS 查询)"
   elif have dig || have getent || have nslookup; then
+    [ "$PLATFORM" = macos ] && report INFO dns/probe-scope "dig/nslookup 探测不覆盖 macOS 按域名/接口选择的全部解析路径;不等同于所有应用的 DNS 行为"
     _fake=0; _nx=0; _ips=""
     for _d in facebook.com twitter.com x.com youtube.com; do
       _ip=$(dns_lookup "$_d")

@@ -196,6 +196,24 @@ _m_url() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+has_text() { printf '%s' "$1" | grep -q '[^[:space:]]'; }
+
+# GNU/BSD stat: validate numeric output (GNU stat -f prints filesystem metadata).
+fs_mtime() (
+  _mt=$(stat -c %Y "$1" 2>/dev/null) || _mt=""
+  case "$_mt" in ''|*[!0-9]*) _mt=$(stat -f %m "$1" 2>/dev/null) || _mt="" ;; esac
+  case "$_mt" in ''|*[!0-9]*) return 1 ;; *) printf '%s\n' "$_mt" ;; esac
+)
+
+# Consume newline-delimited paths without splitting spaces, quotes or backslashes.
+# Filenames containing a newline remain outside this bounded sampling format.
+file_mtimes() (
+  while IFS= read -r _mf; do
+    [ -f "$_mf" ] && fs_mtime "$_mf"
+  done
+  :
+)
+
 # 文件时间戳(birth 优先,回退 mtime;GNU/BSD 兼容;空=不可得)
 fs_btime() {
   _t=""
@@ -207,7 +225,7 @@ fs_btime() {
     _t=$(stat -c %Y "$1" 2>/dev/null) || _t=""
     case "$_t" in ""|0) _t=$(stat -f %m "$1" 2>/dev/null) || _t="" ;; esac
   esac
-  case "$_t" in ""|0) printf '' ;; *) printf '%s' "$_t" ;;
+  case "$_t" in ""|0|*[!0-9]*) printf '' ;; *) printf '%s' "$_t" ;;
   esac
 }
 
@@ -357,6 +375,7 @@ jf() { # $1=key $2=json
 
 ip_is_private() {
   case "$1" in
+    ::|::1|[fF][cCdD]*:*|[fF][eE][89aAbB]*:*|[fF][fF]*:*) return 0 ;;
     10.*|192.168.*|127.*|169.254.*|0.0.0.0|255.255.255.255|22[4-9].*|23[0-9].*) return 0 ;;
     172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 0 ;;
     100.6[4-9].*|100.7[0-9].*|100.8[0-9].*|100.9[0-9].*|100.1[01][0-9].*|100.12[0-7].*) return 0 ;;
@@ -418,7 +437,7 @@ PS_SNAP=""                                      # 进程快照(ps_filtered 数�
 detect_platform() {
   PLATFORM="linux"; PLATFORM_NOTE=""
   case "$(uname -s)" in
-    Darwin) PLATFORM="macos"; PLATFORM_NOTE="macOS(基础检测,完整适配 v0.5)" ;;
+    Darwin) PLATFORM="macos"; PLATFORM_NOTE="macOS(原生只读采集;不适用项显式跳过)" ;;
     MINGW*|MSYS*) PLATFORM="msys"; PLATFORM_NOTE="MSYS/Git Bash(/proc 不全,尽力降级)" ;;
     Linux)
       if grep -qi microsoft /proc/version 2>/dev/null; then
@@ -466,8 +485,8 @@ collector_context() {
     _pn=$(ps -o comm= -p "$_pp" 2>/dev/null | awk 'NR==1{print $1}' 2>/dev/null)
     [ -z "$_pn" ] && break
     PARENT_CHAIN="${PARENT_CHAIN:+$PARENT_CHAIN → }$_pn"
-    case "$_pn" in
-      sshd)          IN_SSH_CHAIN=1 ;;
+    case "${_pn##*/}" in
+      sshd|sshd-session) IN_SSH_CHAIN=1 ;;
       tmux*|screen*) IN_MUX=1 ;;
     esac
     _p=$_pp; _i=$((_i+1))
@@ -478,16 +497,18 @@ collector_context() {
 
 # 网络上下文(出口注记用;本地操作,不外联)
 net_context() {
-  if have ip; then
+  if [ "$PLATFORM" = macos ] && have route; then
+    _rt=$(route -n get 1.1.1.1 2>/dev/null)
+    ROUTE_IFACE=$(printf '%s' "$_rt" | awk '$1=="interface:" {print $2}')
+    ROUTE_GW=$(printf '%s' "$_rt" | awk '$1=="gateway:" {print $2}')
+    if [ -n "$ROUTE_IFACE" ] && have ifconfig; then
+      ROUTE_SRC=$(ifconfig "$ROUTE_IFACE" 2>/dev/null | awk '$1=="inet" {print $2; exit}')
+    fi
+  elif have ip; then
     _rt=$(ip route get 1.1.1.1 2>/dev/null | head -n 1)
     ROUTE_IFACE=$(printf '%s' "$_rt" | sed -n 's/.* dev \([^ ]*\).*/\1/p')
     ROUTE_SRC=$(printf '%s' "$_rt" | sed -n 's/.* src \([0-9a-fA-F.:]*\).*/\1/p')
     ROUTE_GW=$(printf '%s' "$_rt" | sed -n 's/.* via \([0-9a-fA-F.:]*\).*/\1/p')
-  elif [ "$PLATFORM" = macos ] && have route; then
-    _rt=$(route -n get 1.1.1.1 2>/dev/null)
-    ROUTE_IFACE=$(printf '%s' "$_rt" | sed -n 's/.*interface: //p')
-    ROUTE_SRC=$(printf '%s' "$_rt" | sed -n 's/.*local address: //p')
-    ROUTE_GW=$(printf '%s' "$_rt" | sed -n 's/.*gateway: //p')
   elif [ -r /proc/net/route ]; then
     # 回退:默认路由(Destination=00000000)的网关小端 hex + 接口名
     _line=$(awk '$2=="00000000"{print $1, $3; exit}' /proc/net/route 2>/dev/null)
@@ -498,7 +519,7 @@ net_context() {
     have hostname && ROUTE_SRC=$(hostname -I 2>/dev/null | awk '{print $1}')
   fi
   case "$ROUTE_IFACE" in
-    tun*|tap*|wg*|ppp*|tailscale*) NET_ANNOT="经隧道接口 $ROUTE_IFACE" ;;
+    tun*|utun*|tap*|wg*|ppp*|tailscale*) NET_ANNOT="经隧道接口 $ROUTE_IFACE" ;;
   esac
   if [ -n "${http_proxy:-}${https_proxy:-}${HTTP_PROXY:-}${HTTPS_PROXY:-}${all_proxy:-}" ]; then
     NET_ANNOT="${NET_ANNOT:+$NET_ANNOT;}经环境代理"
@@ -506,6 +527,33 @@ net_context() {
   case "$PLATFORM" in
     container-*) NET_ANNOT="${NET_ANNOT:+$NET_ANNOT;}容器内观测(NAT 后出口)" ;;
   esac
+}
+
+# macOS read-only helpers. Subshells keep scratch variables out of check functions.
+mac_console_user() (
+  _cu=$(printf 'show State:/Users/ConsoleUser\n' | scutil 2>/dev/null |
+    awk '$1=="Name" && $2==":" {print $3; exit}')
+  case "$_cu" in ''|loginwindow|root|_mbsetupuser) return 1 ;; *) printf '%s\n' "$_cu" ;; esac
+)
+
+mac_boot_epoch() {
+  sysctl -n kern.boottime 2>/dev/null |
+    sed -n 's/.*{[[:space:]]*sec = \([0-9][0-9]*\),.*/\1/p'
+}
+
+mac_dns_servers() {
+  scutil --dns 2>/dev/null |
+    awk '$1 ~ /^nameserver\[[0-9]+\]$/ && $2==":" && !seen[$3]++ {print $3}'
+}
+
+mac_wifi_interfaces() {
+  networksetup -listallhardwareports 2>/dev/null |
+    awk '/^Hardware Port:/ {wifi=($0 ~ /Wi-Fi|AirPort/)} wifi && /^Device:/ {print $2}'
+}
+
+# Match bundle-id components, not substrings: com.todesktop is not ToDesk.
+mac_cn_labels() {
+  grep -iE '(^|\.)(tencent|qq|weixin|wechat|baidu|netease|alibaba|aliyun|dingtalk|sunlogin|todesk|iqiyi|youku|bilibili)(\.|$)'
 }
 
 #────────────────────────────── C1 sysinfo ──────────────────────────────
@@ -517,6 +565,9 @@ check_c1() {
   # 发行版与内核
   _pretty="unknown"
   [ -r /etc/os-release ] && _pretty=$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | tr -d '"' | head -n 1)
+  if [ "$PLATFORM" = macos ]; then
+    _pretty="$(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null)"
+  fi
   report INFO sysinfo/os "$_pretty · $(uname -sr) · $(uname -m)"
 
   # 平台判定
@@ -525,10 +576,20 @@ check_c1() {
   # 采集者边界(u0)
   _tty=$(tty 2>/dev/null) || _tty=""
   case "$_tty" in ""|*"not a tty"*) _tty="无tty" ;; *) _tty="${_tty#/dev/}" ;; esac
-  report INFO sysinfo/collector "采集者: uid=$CUR_UID($CUR_USER) · tty=$_tty · 父链: ${PARENT_CHAIN:-?}${IN_SSH_CHAIN:+ [sshd]}${IN_MUX:+ [mux]}"
+  _chain_flags=""
+  [ "$IN_SSH_CHAIN" = 1 ] && _chain_flags="$_chain_flags [sshd]"
+  [ "$IN_MUX" = 1 ] && _chain_flags="$_chain_flags [mux]"
+  report INFO sysinfo/collector "采集者: uid=$CUR_UID($CUR_USER) · tty=$_tty · 父链: ${PARENT_CHAIN:-?}$_chain_flags"
 
   # uptime
-  if [ -r /proc/uptime ]; then
+  if [ "$PLATFORM" = macos ]; then
+    _bt=$(mac_boot_epoch)
+    case "$_bt" in
+      ''|*[!0-9]*) report SKIP sysinfo/uptime "(kern.boottime 不可读)" ;;
+      *) _up=$(($(date +%s) - _bt))
+         report INFO sysinfo/uptime "运行时长: $((_up/86400)) 天 $(((_up%86400)/3600)) 小时(kern.boottime)" ;;
+    esac
+  elif [ -r /proc/uptime ]; then
     _up=$(cut -d. -f1 /proc/uptime)
     report INFO sysinfo/uptime "运行时长: $((_up/86400)) 天 $(((_up%86400)/3600)) 小时"
   else
@@ -536,15 +597,20 @@ check_c1() {
   fi
 
   # 系统安装时间(machine-id 时间估算,与 C12 新装判定共用)
-  _it=$(fs_btime /etc/machine-id)
-  [ -z "$_it" ] && _it=$(fs_btime /lost+found 2>/dev/null)
-  if [ -n "$_it" ] && [ "$_it" != 0 ]; then
-    _now=$(date +%s)
-    INSTALL_AGE_DAYS=$(( (_now - _it) / 86400 ))
-    [ "$INSTALL_AGE_DAYS" -lt 0 ] && INSTALL_AGE_DAYS=0
-    report INFO sysinfo/install-age "系统约安装于 $INSTALL_AGE_DAYS 天前(machine-id 时间估算)"
+  if [ "$PLATFORM" = macos ]; then
+    report SKIP sysinfo/install-age "(macOS 无可靠的只读安装时间依据,不以系统卷文件时间推断)"
   else
-    report SKIP sysinfo/install-age "(无法取 machine-id/lost+found 时间)"
+    _it=$(fs_btime /etc/machine-id)
+    [ -z "$_it" ] && _it=$(fs_btime /lost+found 2>/dev/null)
+    if [ -n "$_it" ] && [ "$_it" != 0 ]; then
+      _now=$(date +%s)
+      INSTALL_AGE_DAYS=$(( (_now - _it) / 86400 ))
+      [ "$INSTALL_AGE_DAYS" -lt 0 ] && INSTALL_AGE_DAYS=0
+      report INFO sysinfo/install-age "系统约安装于 $INSTALL_AGE_DAYS 天前(machine-id 时间估算)"
+    else
+      report SKIP sysinfo/install-age "(无法取 machine-id/lost+found 时间)"
+    fi
+
   fi
 
   # 连接方式
@@ -571,7 +637,7 @@ check_c1() {
       *)   report INFO sysinfo/tcp-cc "拥塞控制 ${_cc:-default}" ;;
     esac
   else
-    report SKIP sysinfo/tcp-cc "(/proc/sys 不可读)"
+    report SKIP sysinfo/tcp-cc "(Linux /proc/sys 检测不适用或不可读)"
   fi
 
   # 登录用户列表
@@ -604,7 +670,7 @@ check_c2() {
     fi
     [ -n "$_vendor" ] && report INFO cloud/dmi "DMI: $_vendor / ${_product:-?}"
   else
-    report SKIP cloud/dmi "(容器内无 DMI 或不可读)"
+    report SKIP cloud/dmi "(Linux DMI 接口不适用或不可读;macOS 硬件见 hw 类)"
   fi
 
   # 云 agent 进程
@@ -953,10 +1019,12 @@ check_c5() {
 
   # ── 接口分类 ──
   _vpn=""; _cni=""
-  for _i in $(ls /sys/class/net 2>/dev/null); do
+  if [ "$PLATFORM" = macos ]; then _ifnames=$(ifconfig -l 2>/dev/null)
+  else _ifnames=$(ls /sys/class/net 2>/dev/null); fi
+  for _i in $_ifnames; do
     case "$_i" in
       lo|eth*|ens*|enp*|eno*|enx*|wlan*|wlp*|wwan*|wwp*|bond*|br0|usb*) : ;;
-      tun*|tap*|wg*|tailscale*|zt*|nordlynx*|ppp*|CloudflareWARP*|warp*) _vpn="$_vpn $_i" ;;
+      utun*|tun*|tap*|wg*|tailscale*|zt*|nordlynx*|ppp*|CloudflareWARP*|warp*) _vpn="$_vpn $_i" ;;
       docker*|veth*|br-*|cni*|cali*|flannel*|weave*|kube*|virbr*|dummy*|podman*) _cni="$_cni $_i" ;;
     esac
   done
@@ -966,7 +1034,7 @@ check_c5() {
     case "$_i" in ppp*) report SUSPICIOUS proxy/pppoe "PPPoE 会话接口 $_i(拨号线路特征)" ;; esac
   done
   case "$ROUTE_IFACE" in
-    tun*|tap*|wg*|ppp*|tailscale*)
+    utun*|tun*|tap*|wg*|ppp*|tailscale*)
       report INFO proxy/default-route "默认路由经隧道接口 $ROUTE_IFACE(出口探测经此接口)" ;;
     *) report INFO proxy/default-route "默认路由接口: ${ROUTE_IFACE:-未知}" ;;
   esac
@@ -985,7 +1053,9 @@ check_c5() {
   done
 
   # ── 透明代理/分流规则(需 root;无权限时跳过) ──
-  if have iptables && iptables -t nat -L -n >/dev/null 2>&1; then
+  if [ "$PLATFORM" = macos ]; then
+    report SKIP proxy/firewall "(macOS PF/Network Extension 规则未采集,不以缺少 iptables 推断无透明代理)"
+  elif have iptables && iptables -t nat -L -n >/dev/null 2>&1; then
     if iptables -t nat -L -n 2>/dev/null | grep -qE 'REDIRECT|TPROXY'; then
       report SUSPICIOUS proxy/transparent "iptables NAT 表含 REDIRECT/TPROXY(透明代理/分流)"
     fi
@@ -1071,7 +1141,11 @@ check_c6() {
     _res=$(resolvectl status 2>/dev/null | grep -oE 'Current DNS Server: [0-9a-fA-F.:]+' | awk '{print $4}' | tr '\n' ' ')
     _resrc="systemd-resolved(resolvectl)"
   fi
-  if [ -z "${_res// /}" ]; then
+  if [ "$PLATFORM" = macos ]; then
+    _res=$(mac_dns_servers | tr '\n' ' ')
+    _resrc="scutil --dns;含 scoped/supplemental 解析器,实际选择取决于域名/接口"
+  fi
+  if ! has_text "$_res"; then
     report SKIP dns/resolvers "(无法确定生效解析器)"
   else
     _masked=""; _lb=0; _nr=0
@@ -1096,8 +1170,8 @@ check_c6() {
     # 解析器 GeoIP(外联最小集;回环转发器无上游可查)
     _pubres=""
     for _r in $_res; do ip_is_private "$_r" || _pubres="$_pubres $_r"; done
-    if [ -z "${_pubres// /}" ]; then
-      report INFO dns/resolver-geo "解析器为本地回环,上游归属不可见(转发器行为见 proxy 类)"
+    if ! has_text "$_pubres"; then
+      report INFO dns/resolver-geo "解析器为私网/回环/链路本地地址,上游归属不可见(转发器行为见 proxy 类)"
     elif [ "$OFFLINE" != 1 ] && [ -n "$HTTP_TOOL" ]; then
       _cnr=""
       for _r in $_pubres; do
@@ -1118,6 +1192,7 @@ check_c6() {
   if [ "$OFFLINE" = 1 ]; then
     report SKIP dns/pollution "(--offline:跳过外联 DNS 查询)"
   elif have dig || have getent || have nslookup; then
+    [ "$PLATFORM" = macos ] && report INFO dns/probe-scope "dig/nslookup 探测不覆盖 macOS 按域名/接口选择的全部解析路径;不等同于所有应用的 DNS 行为"
     _fake=0; _nx=0; _ips=""
     for _d in facebook.com twitter.com x.com youtube.com; do
       _ip=$(dns_lookup "$_d")
@@ -1265,8 +1340,12 @@ check_c8() {
   # ── localedef / man / 键盘 / hostname / RTC ──
   if have locale; then
     _lc=$(locale -a 2>/dev/null | grep -iE '^zh_(CN|HK|MO)' | head -n 4 | tr '\n' ' ')
-    if [ -n "${_lc// /}" ]; then
-      report SUSPICIOUS locale/localedef "已生成中文 locale: $_lc(文化习惯类信号)"
+    if has_text "$_lc"; then
+      if [ "$PLATFORM" = macos ]; then
+        report INFO locale/localedef "系统提供中文 locale: $_lc(macOS 内置可用列表,不代表用户启用;偏好见 macos 类)"
+      else
+        report SUSPICIOUS locale/localedef "已生成中文 locale: $_lc(文化习惯类信号)"
+      fi
     else
       report CLEAN locale/localedef "未生成 zh_CN/HK/MO locale"
     fi
@@ -1394,7 +1473,7 @@ check_c9() {
   fi
   if [ -n "$_pkg_list" ]; then
     _ime=$(printf '%s' "$_pkg_list" | grep -iE "$CN_SOFT_PKG_RE" | head -n 6 | tr '\n' ' ')
-    if [ -n "${_ime// /}" ]; then
+    if has_text "$_ime"; then
       report SUSPICIOUS mirror/cn-apps "已安装国内软件/输入法: $_ime"
     else
       report CLEAN mirror/cn-apps "包列表未命中国内软件表"
@@ -1404,7 +1483,7 @@ check_c9() {
   fi
   if [ -d /usr/share/fonts ]; then
     _fnt=$(ls /usr/share/fonts 2>/dev/null | grep -iE "$CJK_FONT_RE" | head -n 4 | tr '\n' ' ')
-    if [ -n "${_fnt// /}" ]; then
+    if has_text "$_fnt"; then
       report SUSPICIOUS mirror/cjk-fonts "CJK 字体已安装: $_fnt(弱证据)"
     else
       report CLEAN mirror/cjk-fonts "未见 CJK 字体目录"
@@ -1582,33 +1661,38 @@ check_c12() {
   hdr "C12 anti · 隐藏与伪造痕迹(带上下文修正)"
 
   # ── 登录日志权限矩阵 ──
-  for _f in /var/log/wtmp /var/log/btmp /var/log/lastlog /run/utmp; do
-    if [ ! -e "$_f" ]; then
-      report SKIP anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "(不存在:容器/最小系统常见)"
-      continue
-    fi
-    case "$_f" in
-      /var/log/btmp)
-        # btmp 各发行版默认即不可读(RHEL 600 / Debian 660 root:utmp)
-        [ -r "$_f" ] && report INFO anti/btmp "btmp 可读(少数发行版默认)" \
-                       || report INFO anti/btmp "btmp 不可读(RHEL/Debian 系默认,正常)"
-        continue ;;
-    esac
-    if [ -r "$_f" ]; then
-      report INFO anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 当前用户可读(默认权限)"
-    else
-      # 上下文修正:容器 SKIP;新装 INFO;正常老化系统不可读 = 刻意 → 可疑
-      case "$PLATFORM" in
-        container-*) report SKIP anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 不可读(容器环境)" ;;
-        *)
-          if [ "${INSTALL_AGE_DAYS:-0}" -gt 0 ] && [ "$INSTALL_AGE_DAYS" -lt 30 ]; then
-            report INFO anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 不可读(系统安装 $INSTALL_AGE_DAYS 天,新装可能为部署基线)"
-          else
-            report SUSPICIOUS anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 对当前用户不可读(正常系统应为可读 —— 疑似刻意隐藏)"
-          fi ;;
+  if [ "$PLATFORM" = macos ]; then
+    report SKIP anti/linux-logs "(macOS 不使用此 Linux wtmp/btmp/lastlog/utmp 权限基线;登录记录见 session 类)"
+  else
+    for _f in /var/log/wtmp /var/log/btmp /var/log/lastlog /run/utmp; do
+      if [ ! -e "$_f" ]; then
+        report SKIP anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "(不存在:容器/最小系统常见)"
+        continue
+      fi
+      case "$_f" in
+        /var/log/btmp)
+          # btmp 各发行版默认即不可读(RHEL 600 / Debian 660 root:utmp)
+          [ -r "$_f" ] && report INFO anti/btmp "btmp 可读(少数发行版默认)" \
+                         || report INFO anti/btmp "btmp 不可读(RHEL/Debian 系默认,正常)"
+          continue ;;
       esac
-    fi
-  done
+      if [ -r "$_f" ]; then
+        report INFO anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 当前用户可读(默认权限)"
+      else
+        # 上下文修正:容器 SKIP;新装 INFO;正常老化系统不可读 = 刻意 → 可疑
+        case "$PLATFORM" in
+          container-*) report SKIP anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 不可读(容器环境)" ;;
+          *)
+            if [ "${INSTALL_AGE_DAYS:-0}" -gt 0 ] && [ "$INSTALL_AGE_DAYS" -lt 30 ]; then
+              report INFO anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 不可读(系统安装 $INSTALL_AGE_DAYS 天,新装可能为部署基线)"
+            else
+              report SUSPICIOUS anti/"$(printf '%s' "$_f" | tr / _ | tr -d '.')" "$_f 对当前用户不可读(正常系统应为可读 —— 疑似刻意隐藏)"
+            fi ;;
+        esac
+      fi
+    done
+
+  fi
 
   # wtmp 空但 uptime 长
   if [ -r /var/log/wtmp ] && [ ! -s /var/log/wtmp ]; then
@@ -1651,7 +1735,9 @@ check_c12() {
       _ia="${_ia:+$_ia; }$_d"
     fi
   done
-  if [ -n "$_ia" ]; then
+  if [ "$PLATFORM" = macos ]; then
+    report SKIP anti/unit-inaccessible "(macOS 不使用 systemd InaccessiblePaths)"
+  elif [ -n "$_ia" ]; then
     report SUSPICIOUS anti/unit-inaccessible "systemd unit 含 InaccessiblePaths(wtmp/utmp/proc-net):$_ia"
   else
     report CLEAN anti/unit-inaccessible "可读范围内无 InaccessiblePaths(wtmp/utmp/proc-net)命中"
@@ -1660,7 +1746,7 @@ check_c12() {
   # 沙箱 wrapper(~/.local/bin 文本脚本含 landlock/bwrap 关键词)
   if [ -d "$HOME/.local/bin" ]; then
     _w=$(grep -rl -iE 'landlock|LANDLOCK|bwrap' "$HOME/.local/bin" 2>/dev/null | head -n 3 | tr '\n' ' ')
-    if [ -n "${_w// /}" ]; then
+    if has_text "$_w"; then
       report SUSPICIOUS anti/sandbox-wrapper "~/.local/bin 存在沙箱 wrapper: $_w(Landlock/bwrap)"
     fi
   fi
@@ -1711,7 +1797,9 @@ check_c12() {
       fi
     done
   fi
-  if [ -n "$_ptz" ]; then
+  if [ "$PLATFORM" = macos ]; then
+    report SKIP anti/proc-tz "(macOS 无 /proc/PID/environ;不读取完整进程环境以避免凭据采集)"
+  elif [ -n "$_ptz" ]; then
     _ptzval=${_ptz#*:}
     _pc=$(tz_class "$_ptzval")
     case "$_pc" in
@@ -1787,12 +1875,21 @@ check_c14() {
     report SKIP services/procs "(ps 不可用)"
   fi
 
-  # 监听端口(/proc/net/tcp 解析,不依赖 ss)
-  if [ -r /proc/net/tcp ] || [ -r /proc/net/tcp6 ]; then
+  # 监听端口:macOS netstat / Linux proc;采集失败不得报 0 个。
+  _ports=""; _ports_ok=0
+  if [ "$PLATFORM" = macos ]; then
+    if _sockets=$(netstat -an -p tcp 2>/dev/null); then
+      _ports=$(printf '%s\n' "$_sockets" | awk '$1 ~ /^tcp/ && $6=="LISTEN" {n=split($4,a,"."); if(a[n] ~ /^[0-9]+$/) print a[n]}' | sort -un | tr '\n' ' ')
+      _ports_ok=1
+    fi
+  elif [ -r /proc/net/tcp ] || [ -r /proc/net/tcp6 ]; then
     _ports=$(for _f in /proc/net/tcp /proc/net/tcp6; do
       [ -r "$_f" ] || continue
       awk '$4=="0A"{split($2,a,":");h=a[2];d=0;for(i=1;i<=length(h);i++){d=d*16+index("0123456789ABCDEF",toupper(substr(h,i,1)))-1};print d}' "$_f"
     done | sort -un | tr '\n' ' ')
+    _ports_ok=1
+  fi
+  if [ "$_ports_ok" = 1 ]; then
     _pl=$(printf '%s' "$_ports" | wc -w | tr -d ' ')
     _phit=""
     for _p in $_ports; do
@@ -1803,13 +1900,15 @@ check_c14() {
     fi
     report INFO services/listen-ports "共监听 ${_pl:-0} 个端口(localhost+全网)"
   else
-    report SKIP services/listen-ports "(/proc/net/tcp 不可读)"
+    report SKIP services/listen-ports "(TCP 监听表不可读:macOS netstat / Linux proc)"
   fi
 
   # systemd 服务
-  if have systemctl && systemctl list-unit-files >/dev/null 2>&1; then
+  if [ "$PLATFORM" = macos ]; then
+    report INFO services/manager "macOS 使用 launchd;服务标签见 macos 类(单项运行请另查 --section macos)"
+  elif have systemctl && systemctl list-unit-files >/dev/null 2>&1; then
     _se=$(systemctl list-unit-files --type=service 2>/dev/null | awk '{print $1,$2}' | grep -iE "$CN_APP_PROC_RE|$CLOUD_AGENT_PROC_RE" | head -n 6 | tr '\n' ' ')
-    if [ -n "${_se// /}" ]; then
+    if has_text "$_se"; then
       report INFO services/systemd-cn "systemd 服务命中: $(printf '%s' "$_se" | cut -c1-100)(enabled 态见列表)"
     else
       report CLEAN services/systemd-cn "systemd 服务无国内软件命中"
@@ -1846,6 +1945,17 @@ check_c14() {
 
 check_c16() {
   hdr "C16 boot · 引导、初始化与持久化来源"
+
+  if [ "$PLATFORM" = macos ]; then
+    _pid1=$(ps -p 1 -o comm= 2>/dev/null)
+    if [ -n "$_pid1" ]; then
+      report INFO boot/pid1 "PID 1 = ${_pid1##*/}(macOS 服务管理器)"
+    else
+      report SKIP boot/pid1 "(PID 1 信息不可读)"
+    fi
+    report SKIP boot/linux-init "(macOS 不适用 Linux cmdline/cloud-init/systemd/initramfs 检测;launchd 见 macos 类)"
+    return
+  fi
 
   case "$PLATFORM" in
     container-*)
@@ -1940,7 +2050,7 @@ check_c16() {
   fi
   if [ -d "$HOME/.config/autostart" ]; then
     _au=$(ls "$HOME/.config/autostart" 2>/dev/null | head -n 6 | tr '\n' ' ')
-    [ -n "${_au// /}" ] && report INFO boot/autostart "XDG autostart: $_au(用户级持久化)"
+    has_text "$_au" && report INFO boot/autostart "XDG autostart: $_au(用户级持久化)"
   fi
 
   # ── initramfs ──
@@ -1957,6 +2067,28 @@ check_c16() {
 
 check_c17() {
   hdr "C17 kernelnet · 内核、命名空间与网络数据面"
+
+  if [ "$PLATFORM" = macos ]; then
+    report INFO kernel/scope "macOS 当前主机网络视图;Linux netns/cgroup/LSM/seccomp 不适用,不据此推断未受沙箱限制"
+    _ifs=$(ifconfig -l 2>/dev/null)
+    if [ -n "$_ifs" ]; then
+      report INFO kernel/ifaces "可见网络接口: $_ifs(utun 为隧道,不单凭接口名推断物理位置)"
+    else
+      report SKIP kernel/ifaces "(ifconfig 不可用/无权限)"
+    fi
+    if [ -n "$ROUTE_IFACE" ]; then
+      report INFO kernel/routes "到探测目标的路由接口 $ROUTE_IFACE;网关 $(mask_ip "${ROUTE_GW:-未知}")"
+    else
+      report SKIP kernel/routes "(route 查询不可用/无路由)"
+    fi
+    _forward=$(sysctl -n net.inet.ip.forwarding 2>/dev/null)
+    case "$_forward" in
+      0|1) report INFO kernel/ip-forward "IPv4 转发=$_forward(仅拓扑角色)" ;;
+      *) report SKIP kernel/ip-forward "(sysctl 不可读)" ;;
+    esac
+    report SKIP kernel/firewall "(未读取需额外权限的 PF 规则;不声明无透明代理)"
+    return
+  fi
 
   # ── LSM ──
   _lsm=$(cat /sys/kernel/security/lsm 2>/dev/null)
@@ -2049,7 +2181,7 @@ check_c18() {
   hdr "C18 session · 用户、会话与远程入口"
 
   _ps=$(ps_filtered)
-  _n_sess=0
+  _n_sess=0; _lc=""
 
   # ── 会话图:logind 优先,who/utmp 回退 ──
   if have loginctl; then
@@ -2077,16 +2209,29 @@ $_lc
 EOF
   elif have who && who 2>/dev/null | grep -q .; then
     _wl=$(who 2>/dev/null)
-    while read -r _user _tty _from _when _rest; do
-      [ -z "${_user:-}" ] && continue
+    while IFS= read -r _line; do
+      _user=$(printf '%s\n' "$_line" | awk '{print $1}')
+      _tty=$(printf '%s\n' "$_line" | awk '{print $2}')
+      [ -z "$_user" ] && continue
       _n_sess=$((_n_sess+1))
-      _cls="local"
-      case "$_from" in "("*")") _cls="remote(来源 $(mask_ip "$(printf '%s' "$_from" | tr -d '()')"))" ;; esac
+      _rhost=$(printf '%s\n' "$_line" | sed -n 's/.*(\([^()]*\))[[:space:]]*$/\1/p')
+      if [ -n "$_rhost" ] && [ "$_rhost" != ':0' ]; then
+        _cls="remote(来源 $(mask_ip "$_rhost"))"
+        case " $SESS_REMOTES " in *" $_rhost "*) ;; *) SESS_REMOTES="$SESS_REMOTES $_rhost" ;; esac
+      else
+        _cls="local"
+        SESS_LOCAL_N=$((SESS_LOCAL_N+1))
+      fi
       report INFO "session/$_tty" "用户 $_user tty=$_tty $_cls"
     done <<EOF
 $_wl
 EOF
   fi
+  if [ "$PLATFORM" = macos ] && [ "$SESS_LOCAL_N" = 0 ] && mac_console_user >/dev/null; then
+    SESS_LOCAL_N=1; _n_sess=$((_n_sess+1))
+    report INFO session/console "macOS console 用户已登录(scutil;不读取屏幕/输入内容)"
+  fi
+  SESS_N=$_n_sess
   if [ "$_n_sess" = 0 ]; then
     report SKIP session/graph "(logind/who 均不可用或无会话记录 —— 容器/服务环境常见)"
   else
@@ -2152,7 +2297,7 @@ EOF
     done
   done
   _bound=""
-  if [ -n "${_inos// /}" ]; then
+  if has_text "$_inos"; then
     for _tf in /proc/net/tcp /proc/net/tcp6; do
       [ -r "$_tf" ] || continue
       _v6f=0; [ "$_tf" = /proc/net/tcp6 ] && _v6f=1
@@ -2175,20 +2320,25 @@ EOF
   for _p in $_peers; do
     case " $_bound " in *" $_p "*) ;; *) _portonly="$_portonly $_p" ;; esac
   done
-  if [ -n "${_bound// /}" ]; then
+  if has_text "$_bound"; then
     _mp=""; for _p in $_bound; do _mp="$_mp $(mask_ip "$_p")"; done
     report INFO session/ssh-peers "活跃 SSH 会话对端(socket inode 绑定到 sshd 会话进程,强归属):$_mp;GeoIP:自身会话见下,其余归 --deep-geo"
   fi
-  if [ -n "${_portonly// /}" ]; then
+  if has_text "$_portonly"; then
     _mp=""; for _p in $_portonly; do _mp="$_mp $(mask_ip "$_p")"; done
     report INFO session/ssh-peers-port "疑似 SSH 端口对端(未绑定到可读会话进程:他人会话/端口复用可能):$_mp"
   fi
-  if [ -z "${_bound// /}" ] && [ -z "${_portonly// /}" ]; then
-    report CLEAN session/ssh-peers "无活跃 SSH 连接(端口级按 $_ssh_ports 匹配;sshd_config 不可读时端口表可能不全)"
+  if ! has_text "$_bound" && ! has_text "$_portonly"; then
+    if [ -r /proc/net/tcp ] || [ -r /proc/net/tcp6 ]; then
+      report CLEAN session/ssh-peers "无活跃 SSH 连接(端口级按 $_ssh_ports 匹配;sshd_config 不可读时端口表可能不全)"
+    else
+      report SKIP session/ssh-peers "(无可读 Linux socket 表;macOS 未实现 SSH socket 归属采集,不据此认定无连接)"
+    fi
   fi
 
   # ── 当前自身会话对端 GeoIP(外联最小集:即「操作者从哪连入」) ──
   _selfpeer=$(printf '%s' "${SSH_CONNECTION:-}" | awk '{print $1}')
+  SELF_PEER=$_selfpeer
   if [ -n "$_selfpeer" ]; then
     if [ "$OFFLINE" != 1 ] && [ -n "$HTTP_TOOL" ]; then
       _g=$(geoip1 "$_selfpeer"); SELF_PEER=$_selfpeer; SELF_PEER_CC=${_g%%|*}
@@ -2210,7 +2360,7 @@ EOF
     SESS_ENTRIES="$SESS_ENTRIES IDE-remote"
   fi
   _wt=$(printf '%s' "${_ps:-}" | grep -oE 'ttyd|wetty|gotty|shellinabox|code-server|openvscode|jupyter' | sort -u | tr '\n' ' ')
-  if [ -n "${_wt// /}" ]; then
+  if has_text "$_wt"; then
     report INFO session/entry "web terminal/IDE 运行中: $_wt(入口类型:web)"
     SESS_ENTRIES="$SESS_ENTRIES web-terminal($(printf '%s' "$_wt" | sed 's/ *$//'))"
   fi
@@ -2218,13 +2368,15 @@ EOF
     report INFO session/entry "AWS SSM agent 运行中(入口类型:cloud-console,操作者源 IP 通常不可见)"
     SESS_ENTRIES="$SESS_ENTRIES cloud-console(SSM)"
   fi
-  _mux=$(printf '%s' "${_ps:-}" | grep -oE 'tmux|screen' | sort -u | tr '\n' ' ')
-  [ -n "${_mux// /}" ] && report INFO session/mux "终端复用器运行中: $_mux"
+  _mux=$(printf '%s' "${_ps:-}" | grep -oE '(^|/|[[:space:]])(tmux|screen)([[:space:]]|$)' | sed 's|.*/||; s/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u | tr '\n' ' ')
+  has_text "$_mux" && report INFO session/mux "终端复用器运行中: $_mux"
   # 仅统计会话进程,排除 listener(sshd: /usr/sbin/…);
   # 兼容 OpenSSH 9.8+ 的 sshd-session: user@pts/N 命名
   _ssh_sess=$(printf '%s' "${_ps:-}" | grep -cE 'sshd(-session)?: [^/[:space:]]+@' || true)
   if [ "${_ssh_sess:-0}" -gt 0 ]; then
     report INFO session/ssh-active "sshd 活跃会话 x${_ssh_sess}(user@pts 形态)"
+  elif [ -z "$_ps" ]; then
+    report SKIP session/ssh-active "(进程快照不可用)"
   else
     report CLEAN session/ssh-active "无 sshd 活跃会话(仅 listener 或未运行)"
   fi
@@ -2233,7 +2385,7 @@ EOF
   if have last && last -n 10 2>/dev/null | grep -q '^[a-zA-Z]'; then
     _total=$(last -n 10 2>/dev/null | grep -cE 'pts/|tty[0-9]' || true)
     _still=$(last -n 10 2>/dev/null | grep -c 'still logged in' || true)
-    report INFO session/lastlog "wtmp 可读:最近 10 条记录中 $_total 条终端登录、$_still 条仍在线(来源明细属敏感,默认不展示)"
+    report INFO session/lastlog "last 可读:最近 10 条记录中 $_total 条终端登录、$_still 条仍在线(来源明细属敏感,默认不展示)"
   else
     report SKIP session/lastlog "(last 不可用/wtmp 不可读)"
   fi
@@ -2241,7 +2393,7 @@ EOF
   # ── 用户级持久化(与会话同 UID 的服务) ──
   if [ -d "$HOME/.config/systemd/user" ]; then
     _uu=$(ls "$HOME/.config/systemd/user" 2>/dev/null | head -n 6 | tr '\n' ' ')
-    [ -n "${_uu// /}" ] && report INFO session/user-units "用户级 systemd unit: $_uu"
+    has_text "$_uu" && report INFO session/user-units "用户级 systemd unit: $_uu"
   fi
 }
 
@@ -2348,6 +2500,18 @@ check_wsl() {
 
 check_c19() {
   hdr "C19 gui · 图形会话、输入与远程桌面"
+
+  if [ "$PLATFORM" = macos ]; then
+    if mac_console_user >/dev/null; then
+      report INFO gui/session "macOS console 图形用户已登录(Aqua;不以 DISPLAY/X11 判定)"
+    else
+      report SKIP gui/session "(scutil 无可见 console 用户;未登录或权限受限,不推断无桌面)"
+    fi
+    report INFO gui/ime "macOS 输入源由 macos 类读取 HIToolbox(单项 gui 请另运行 --section macos)"
+    report INFO gui/fonts "macOS 内置 CJK 字体不作用户痕迹;用户字体由 macos 类检查"
+    report SKIP gui/rd "(macOS 远控产品/活动会话归属尚未实现;不能用 Linux 二进制/systemd 结果断言无远控)"
+    return
+  fi
 
   # ── 图形会话存在性 ──
   _gui=0; _guit=""
@@ -2502,10 +2666,16 @@ check_c15() {
       _nfound=$((_nfound+1))
       if [ "$_p" = "bin-only" ]; then
         report INFO "browser/$1" "已安装($3;无用户 profile —— 未使用或他人环境)"
-      elif ls "$2"/Default "$2"/Profile* "$2"/profiles.ini >/dev/null 2>&1; then
-        report INFO "browser/$1" "存在用户 profile($2)"
       else
-        report INFO "browser/$1" "目录存在但无用户数据($2 —— 残留/未完成初始化)"
+        _profile=0
+        for _candidate in "$2"/Default "$2"/Profile* "$2"/profiles.ini; do
+          [ -e "$_candidate" ] && _profile=1
+        done
+        if [ "$_profile" = 1 ]; then
+          report INFO "browser/$1" "存在用户 profile($2)"
+        else
+          report INFO "browser/$1" "目录存在但未发现可见 profile($2;可能为空或权限受限)"
+        fi
       fi
     fi
   }
@@ -2543,10 +2713,10 @@ check_c15() {
   if [ -d "$_ffdir" ] && [ -r "$_ffdir/profiles.ini" ]; then
     _nprof=0; _zh=0; _cneng=0
     _prof_list=$(sed -n 's/^Path=//p' "$_ffdir/profiles.ini" 2>/dev/null)
-    while read -r _pr; do
+    while IFS= read -r _pr; do
       [ -z "${_pr:-}" ] && continue
       case "$_pr" in \~/*) continue ;; esac
-      _pf="$_ffdir/$_pr"
+      case "$_pr" in /*) _pf=$_pr ;; *) _pf="$_ffdir/$_pr" ;; esac
       [ -d "$_pf" ] || continue
       _nprof=$((_nprof+1))
       if [ -r "$_pf/prefs.js" ]; then
@@ -2570,13 +2740,22 @@ EOF
 
   # ── Chromium 系(Chrome/Chromium/Brave/Edge/Vivaldi):Preferences JSON ──
   if [ "$PLATFORM" = macos ]; then
-    _cp_scan="Google/Chrome Chromium BraveSoftware/Brave-Browser 'Microsoft Edge' Vivaldi"
+    _cp_scan="Google/Chrome
+Chromium
+BraveSoftware/Brave-Browser
+Microsoft Edge
+Vivaldi"
     _cp_root="$HOME/Library/Application Support"
   else
-    _cp_scan="google-chrome chromium BraveSoftware/Brave-Browser microsoft-edge vivaldi opera"
+    _cp_scan="google-chrome
+chromium
+BraveSoftware/Brave-Browser
+microsoft-edge
+vivaldi
+opera"
     _cp_root="$HOME/.config"
   fi
-  for _cp in $_cp_scan; do
+  while IFS= read -r _cp; do
     _bdir="$_cp_root/$_cp"
     [ -d "$_bdir" ] || continue
     _bname=$(printf '%s' "$_cp" | sed 's|.*/||')
@@ -2587,7 +2766,7 @@ EOF
       [ -r "$_prof/Preferences" ] || continue
       _pj=$(head -c 2000000 "$_prof/Preferences" 2>/dev/null)
       # 默认搜索引擎(Preferences 内 default_search_provider_data.short_name)
-      _eng=$(printf '%s' "$_pj" | sed 's/.*"default_search_provider_data"[^S]*"short_name":"\([^"]*\)".*/\1/p' | head -c 40)
+      _eng=$(printf '%s' "$_pj" | sed -n 's/.*"default_search_provider_data"[^S]*"short_name":"\([^"]*\)".*/\1/p' | head -c 40)
       case "${_eng:-}" in
         *百度*|*[Bb]aidu*|*[Ss]ogou*|*搜狗*|*360*|*so\.com*)
           report SUSPICIOUS "browser/$_bname-search" "$_bname 默认搜索引擎: $_eng(国内引擎,文化习惯类信号)" ;;
@@ -2600,41 +2779,45 @@ EOF
       esac
     done
     [ "$_nprof" -gt 0 ] && report INFO "browser/$_bname" "$_bname profile $_nprof 个(已检查搜索引擎与语言设置)"
-  done
+  done <<EOF
+$_cp_scan
+EOF
 
   # ── 历史/书签国内域名计数(只计数;上限 30MB/文件,防大文件耗时) ──
   _hcount=0
   _h_scan() { # $1=文件 $2=浏览器名
     [ -f "$1" ] || return 0
+    if [ ! -r "$1" ]; then
+      report SKIP "browser/$2-history" "(历史文件不可读;macOS 权限/TCC 限制可能导致跳过)"
+      return
+    fi
     _c=$(head -c 30000000 "$1" 2>/dev/null | LC_ALL=C grep -aoE 'https?://[a-zA-Z0-9.-]+' \
          | sed 's|https\?://||' | grep -cE "$CN_DOMAIN_RE" || true)
     _c=${_c:-0}
     if [ "$_c" -gt 0 ]; then
       _lvl=INFO; [ "$_c" -ge 10 ] && _lvl=SUSPICIOUS
-      report "$_lvl" "browser/$2-history" "$2 历史含国内域名记录 $_c 条(仅计数,不读取 URL 明文;≥10 判可疑)"
+      report "$_lvl" "browser/$2-history" "$2 历史文件前 30MB 匹配国内域名 $_c 次(原始字节近似计数,非访问次数;不输出 URL/查询词;≥10 判可疑)"
       _hcount=$((_hcount+1))
     else
-      report CLEAN "browser/$2-history" "$2 历史无国内域名记录(或历史为空)"
+      report CLEAN "browser/$2-history" "$2 历史文件前 30MB 未匹配国内域名(不代表全部历史无记录)"
     fi
   }
   if [ -d "$_ffdir" ]; then
-    for _pr in $(sed -n 's/^Path=//p' "$_ffdir/profiles.ini" 2>/dev/null); do
+    while IFS= read -r _pr; do
       case "$_pr" in \~/*) continue ;; esac
-      _h_scan "$_ffdir/$_pr/places.sqlite" firefox
-    done
+      case "$_pr" in /*) _pf=$_pr ;; *) _pf="$_ffdir/$_pr" ;; esac
+      _h_scan "$_pf/places.sqlite" firefox
+    done <<EOF
+$(sed -n 's/^Path=//p' "$_ffdir/profiles.ini" 2>/dev/null)
+EOF
   fi
-  if [ "$PLATFORM" = macos ]; then
-    _cp_list="Google/Chrome Chromium BraveSoftware/Brave-Browser 'Microsoft Edge' Vivaldi"
-    _cp_base="$HOME/Library/Application Support"
-  else
-    _cp_list="google-chrome chromium BraveSoftware/Brave-Browser microsoft-edge vivaldi opera"
-    _cp_base="$HOME/.config"
-  fi
-  for _cp in $_cp_list; do
-    for _prof in "$_cp_base/$_cp"/Default "$_cp_base/$_cp"/Profile*; do
-      _h_scan "$_prof/History" "$(printf '%s' "$_cp" | sed 's|.*/||')"
+  while IFS= read -r _cp; do
+    for _prof in "$_cp_root/$_cp"/Default "$_cp_root/$_cp"/Profile*; do
+      _h_scan "$_prof/History" "${_cp##*/}"
     done
-  done
+  done <<EOF
+$_cp_scan
+EOF
 }
 
 #────────────────────────────── C13 hw ──────────────────────────────
@@ -2644,6 +2827,27 @@ EOF
 
 check_c13() {
   hdr "C13 hw · 硬件、DMI 与无线/蜂窝"
+
+  if [ "$PLATFORM" = macos ]; then
+    _model=$(sysctl -n hw.model 2>/dev/null)
+    _cpu=$(sysctl -n machdep.cpu.brand_string 2>/dev/null)
+    if [ -n "$_model" ]; then report INFO hw/model "Mac 型号: $_model(不读取序列号/UUID)"
+    else report SKIP hw/model "(hw.model 不可读)"; fi
+    if [ -n "$_cpu" ]; then report INFO hw/cpu "CPU: $_cpu"
+    else report SKIP hw/cpu "(CPU 品牌不可读)"; fi
+    _wifi=$(mac_wifi_interfaces)
+    if [ -n "$_wifi" ]; then
+      report INFO hw/wireless "Wi-Fi 硬件接口: $(printf '%s' "$_wifi" | tr '\n' ' ')(不读取 SSID/BSSID,不代表已关联)"
+    else
+      report SKIP hw/wireless "(networksetup 无可见 Wi-Fi 硬件接口,不据此认定无无线硬件)"
+    fi
+    if [ "$RADIO" = 1 ]; then
+      report SKIP hw/radio "(macOS 暂无稳定的无提权监管域/蜂窝采集接口;不调用已弃用 airport 或申请定位权限)"
+    else
+      report SKIP hw/radio "(默认关闭;macOS 监管域/蜂窝采集尚不支持)"
+    fi
+    return
+  fi
 
   # ── DMI 品牌(只读 vendor/product_name;不读 serial/UUID) ──
   if [ -r /sys/class/dmi/id/product_name ]; then
@@ -2766,7 +2970,7 @@ check_c11() {
     _e1=$(last -F -n 400 2>/dev/null | awk -v off=$OFFMIN '
       function mke(y,mo,d,h,mi,s, era,yoe,doy,doe,days) {
         if (mo<=2){y--}; era=int((y>=0?y:y-399)/400); yoe=y-era*400
-        doy=int((153*(mo-3)+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
+        doy=int((153*(mo+(mo>2?-3:9))+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
         days=era*146097+doe-719468
         return days*86400+h*3600+mi*60+s-off*60
       }
@@ -2816,22 +3020,28 @@ $(sed -n 's/^: \([0-9]\{9,\}\):.*/\1/p' "$_h2z")"
     [ -d "$_base" ] || continue
     _files=$(find "$_base" -name '*.jsonl' -mtime -120 2>/dev/null | head -n 150)
     [ -z "$_files" ] && continue
-    _e3=$(printf '%s\n' "$_files" | LC_ALL=C xargs -r awk '
+    _e3=$(while IFS= read -r _af; do
+      LC_ALL=C awk '
       function mke(y,mo,d,h,mi,s, era,yoe,doy,doe,days) {
         if (mo<=2){y--}; era=int((y>=0?y:y-399)/400); yoe=y-era*400
-        doy=int((153*(mo-3)+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
+        doy=int((153*(mo+(mo>2?-3:9))+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
         days=era*146097+doe-719468
         return days*86400+h*3600+mi*60+s
       }
       {
-        if ($0 !~ /"role":"user"/ && $0 !~ /"type":"user"/) next
+        if ($0 !~ /"role"[[:space:]]*:[[:space:]]*"user"/ && $0 !~ /"type"[[:space:]]*:[[:space:]]*"user"/) next
         if ($0 ~ /"tool_result"/ || $0 ~ /"function_call_output"/ || \
-            $0 ~ /"toolUseResult"/ || $0 ~ /"isMeta":true/ || $0 ~ /"isSidechain":true/) next
-        if (!match($0, /"timestamp":"[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/)) next
-        ts=substr($0, RSTART+13, RLENGTH-13)
+            $0 ~ /"toolUseResult"/ || $0 ~ /"isMeta"[[:space:]]*:[[:space:]]*true/ || $0 ~ /"isSidechain"[[:space:]]*:[[:space:]]*true/) next
+        if (!match($0, /"timestamp"[[:space:]]*:[[:space:]]*"[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/)) next
+        ts=substr($0, RSTART, RLENGTH)
+        sub(/^[^:]+:[[:space:]]*"/, "", ts)
         split(ts, a, /[-T:]/)
         print mke(a[1]+0, a[2]+0, a[3]+0, a[4]+0, a[5]+0, a[6]+0)
-      }' 2>/dev/null)
+      }' "$_af" 2>/dev/null
+    done <<EOF
+$_files
+EOF
+    )
     _c=$(printf '%s\n' "$_e3" | grep -c '^[0-9]' || true)
     if [ "${_c:-0}" -gt 0 ]; then _n3=$((_n3+_c)); _ev="$_ev
 $_e3"; fi
@@ -2844,11 +3054,11 @@ $_e3"; fi
   for _d in "$HOME/Downloads" "$HOME/Documents" "$HOME/Desktop"; do
     [ -d "$_d" ] || continue
     _e5="$_e5
-$(find "$_d" -maxdepth 2 -type f -mtime -120 2>/dev/null | head -n 200 | xargs -r stat -c '%Y' 2>/dev/null)"
+$(find "$_d" -maxdepth 2 -type f -mtime -120 2>/dev/null | head -n 200 | file_mtimes)"
   done
   for _f in "$HOME/.bashrc" "$HOME/.gitconfig" "$HOME/.ssh/config" "$HOME/.config/tmux/tmux.conf"; do
     [ -f "$_f" ] && [ -n "$(find "$_f" -mtime -120 2>/dev/null)" ] && _e5="$_e5
-$(stat -c '%Y' "$_f" 2>/dev/null)"
+$(fs_mtime "$_f")"
   done
   _n5=$(printf '%s\n' "$_e5" | grep -c '^[0-9]' || true)
   [ "${_n5:-0}" -gt 0 ] && _ev="$_ev
@@ -2860,32 +3070,24 @@ $_e5"
   if have git; then
     _mymail=$(git config --global user.email 2>/dev/null)
     _repos=$(find "$HOME" -maxdepth 3 -name .git -type d 2>/dev/null | head -n 6)
-    for _r in $_repos; do
+    while IFS= read -r _r; do
+      [ -n "$_r" ] || continue
       _d=${_r%/.git}
       if [ -n "$_mymail" ]; then
-        _gl=$(git -C "$_d" log --all --author="$_mymail" --pretty='%ad' --date=iso -n 500 2>/dev/null)
+        _gl=$(git -C "$_d" log --all --author="$_mymail" --pretty='%at %ai' -n 500 2>/dev/null)
       else
-        _gl=$(git -C "$_d" log --all --pretty='%ad' --date=iso -n 500 2>/dev/null)
+        _gl=$(git -C "$_d" log --all --pretty='%at %ai' -n 500 2>/dev/null)
       fi
       [ -z "$_gl" ] && continue
       _tz7="$_tz7
 $(printf '%s\n' "$_gl" | grep -oE '[+-][0-9]{4}$' | sort | uniq -c)"
-      _e7=$(printf '%s\n' "$_gl" | awk -v off=0 '
-        function mke(y,mo,d,h,mi,s,om, era,yoe,doy,doe,days) {
-          if (mo<=2){y--}; era=int((y>=0?y:y-399)/400); yoe=y-era*400
-          doy=int((153*(mo-3)+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
-          days=era*146097+doe-719468
-          return days*86400+h*3600+mi*60+s-om*60
-        }
-        {
-          if (split($0, a, /[-: ]/) < 6) next
-          om = (a[7] ~ /^[+-]/) ? (substr(a[7],2,2)*60+substr(a[7],4,2)) * (a[7]~/^-/?-1:1) : 0
-          print mke(a[1]+0, a[2]+0, a[3]+0, a[4]+0, a[5]+0, a[6]+0, om)
-        }')
+      _e7=$(printf '%s\n' "$_gl" | awk '$1 ~ /^[0-9]+$/ {print $1}')
       _c=$(printf '%s\n' "$_e7" | grep -c '^[0-9]' || true)
       [ "${_c:-0}" -gt 0 ] && { _n7=$((_n7+_c)); _ev="$_ev
 $_e7"; }
-    done
+    done <<EOF
+$_repos
+EOF
   fi
   _src_n="$_src_n git提交=$_n7"
 
@@ -2895,7 +3097,7 @@ $_e7"; }
     _e9=$(dnf history list --reverse 2>/dev/null | awk -v off=$OFFMIN -F'|' '
       function mke(y,mo,d,h,mi,s,om, era,yoe,doy,doe,days) {
         if (mo<=2){y--}; era=int((y>=0?y:y-399)/400); yoe=y-era*400
-        doy=int((153*(mo-3)+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
+        doy=int((153*(mo+(mo>2?-3:9))+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
         days=era*146097+doe-719468
         return days*86400+h*3600+mi*60+s-om*60
       }
@@ -2907,7 +3109,7 @@ $_e7"; }
     _e9=$(sed -n 's/^Start-Date: \([0-9-]\{10\}\)  \([0-9:]\{8\}\).*/\1 \2/p' /var/log/apt/history.log | awk -v off=$OFFMIN '
       function mke(y,mo,d,h,mi,s,om, era,yoe,doy,doe,days) {
         if (mo<=2){y--}; era=int((y>=0?y:y-399)/400); yoe=y-era*400
-        doy=int((153*(mo-3)+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
+        doy=int((153*(mo+(mo>2?-3:9))+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
         days=era*146097+doe-719468
         return days*86400+h*3600+mi*60+s-om*60
       }{ split($1,a,"-"); split($2,b,":"); print mke(a[1]+0,a[2]+0,a[3]+0,b[1]+0,b[2]+0,b[3]+0, off) }')
@@ -2922,12 +3124,15 @@ $_e9"
   for _f in "$HOME/.config/fcitx/profile" "$HOME/.local/share/fcitx5" "$HOME/.config/ibus"; do
     if [ -e "$_f" ]; then
       _e10="$_e10
-$(find "$_f" -type f -mtime -120 2>/dev/null | head -n 30 | xargs -r stat -c '%Y' 2>/dev/null)"
+$(find "$_f" -type f -mtime -120 2>/dev/null | head -n 30 | file_mtimes)"
     fi
   done
-  for _f in "$HOME/.config/google-chrome/Default/History" "$HOME/.mozilla/firefox"/*/"places.sqlite"; do
+  for _f in "$HOME/.config/google-chrome/Default/History" "$HOME/.mozilla/firefox"/*/"places.sqlite" \
+    "$HOME/Library/Application Support/Google/Chrome"/*/History \
+    "$HOME/Library/Application Support/Microsoft Edge"/*/History \
+    "$HOME/Library/Application Support/Firefox/Profiles"/*/places.sqlite; do
     [ -f "$_f" ] && _e10="$_e10
-$(stat -c '%Y' "$_f" 2>/dev/null)"
+$(fs_mtime "$_f")"
   done
   _n10=$(printf '%s\n' "$_e10" | grep -c '^[0-9]' || true)
   [ "${_n10:-0}" -gt 0 ] && _ev="$_ev
@@ -2996,7 +3201,7 @@ $_e10"
   if [ "$BRIEF" != 1 ] && [ "${JSON:-0}" != 1 ]; then
     printf '%s   UTC 小时分布(30 格满幅,簇首 %d 个/原始 %d 个;%s)%s\n' "$C_DIM" "$_ncl" "$_n_raw" "$(printf '%s' "$_src_n" | sed 's/^ //')" "$C_RST"
     printf '%s\n' "$_res" | tail -n 24 | awk -v c="$C_DIM" -v r="$C_RST" \
-      '{printf "%s   %s %s%s\n", c, $1, substr("────────────────────────────", 1, $2), r}'
+      '{printf "%s   %s %s%s\n", c, $1, substr("------------------------------", 1, $2), r}'
   fi
 
   # ── 判定 1:作息推断 vs 系统时区设置(一致性检验) ──
@@ -3017,7 +3222,9 @@ $_e10"
     near)     _e8desc="东/东南亚工作节奏段(UTC+${_olo}–${_ohi};+7 时区如曼谷/雅加达/珀斯亦可解释)" ;;
     *)        _e8desc="" ;;
   esac
-  report INFO time/infer "作息推断 UTC+${_offs}(置信${_conf};最佳得分 $_bs,次优 $_b2;周末占比 $(awk "BEGIN{printf \"%.0f%%\", $_we*100}"))${_e8desc:+ · $_e8desc}"
+  _we_pct=$(awk -v fraction="$_we" 'BEGIN {printf "%.0f%%", fraction*100}')
+  report INFO time/infer "作息推断 UTC+${_offs}(置信${_conf};最佳得分 $_bs,次优 $_b2;周末占比 $_we_pct)${_e8desc:+ · $_e8desc}"
+
   _tz_hit=""; case "${TZ_CLASS:-}" in CN|HKMO) _tz_hit=hit ;; esac
   if [ -z "${TZ_NAME:-}" ]; then
     report SKIP time/tz-consist "(系统时区不可探测,无法与作息比对)"
@@ -3050,7 +3257,7 @@ $_e10"
   _cal=$(printf '%s\n' "$_cl" | awk -v off="$_off8" -v hol="$CN_HOLIDAYS" -v mk="$CN_MAKEUP" '
     function dfc(y,mo,d, era,yoe,doy,doe) {
       if (mo<=2){y--}; era=int((y>=0?y:y-399)/400); yoe=y-era*400
-      doy=int((153*(mo-3)+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
+      doy=int((153*(mo+(mo>2?-3:9))+2)/5)+d-1; doe=yoe*365+int(yoe/4)-int(yoe/100)+doy
       return era*146097+doe-719468
     }
     function cfd(z, era,doe,yoe,y,doy,mp,dd) {
@@ -3194,9 +3401,9 @@ check_c20() {
         esac ;;
     esac
   done
-  [ -n "${_dghit// /}" ] && _v="$_v
+  has_text "$_dghit" && _v="$_v
   · deep-geo:远程会话对端命中陆港澳:$_dghit"
-  if [ "$DEEP_GEO" = 1 ] && [ -z "${_dghit// /}" ] && [ "$_nrem" -gt 0 ]; then
+  if [ "$DEEP_GEO" = 1 ] && ! has_text "$_dghit" && [ "$_nrem" -gt 0 ]; then
     _v="$_v
   · deep-geo:远程会话对端无陆港澳命中"
   fi
@@ -3219,13 +3426,14 @@ check_c20() {
     _pjn=$(grep -ciE '^[[:space:]]*(proxyjump|proxycommand)' "$HOME/.ssh/config" 2>/dev/null || true)
     [ "${_pjn:-0}" -gt 0 ] && _bp="$_bp ssh ProxyJump/ProxyCommand x$_pjn(跳板链)"
   fi
-  [ -n "${RD_CONNECTED// /}" ] && _bp="$_bp 远控会话(${RD_CONNECTED})"
-  if [ -n "${_bp// /}" ]; then
+  has_text "$RD_CONNECTED" && _bp="$_bp 远控会话(${RD_CONNECTED})"
+  if has_text "$_bp"; then
     _v="$_v
 - 链路断点:$(printf '%s' "$_bp" | sed 's/^ *//')—— 实际操作者位置在这些链路后不可直接观察,保留全部旁证"
   else
     _v="$_v
-- 链路断点:无(直连可观测链路)"
+- 链路断点:未识别(不代表不存在中继)"
+    [ "$PLATFORM" = macos ] && _v="$_v;macOS SSH socket/远控会话归属未完整采集"
   fi
 
   # ── u7:家族融合与冲突链 ──
@@ -3284,7 +3492,7 @@ check_c20() {
 # 定位:仅 macOS 平台 —— 补齐 Linux 检测覆盖不到的系统级地域痕迹
 #       (系统区域/系统代理/launchctl 服务/输入法/用户字体/Homebrew 镜像)
 # 原则:与 Linux 各类同语义同级别;时区/DNS/出口/浏览器/会话由既有类别原生覆盖
-#       (/etc/localtime、/etc/resolv.conf、curl、who、~/Library 浏览器路径在 macOS 均可用)
+#       (/etc/localtime、scutil --dns、curl、who、~/Library 浏览器路径)
 
 check_mac() {
   hdr "macOS · 系统级地域痕迹(scutil/defaults/launchctl,只读)"
@@ -3294,17 +3502,6 @@ check_mac() {
     return
   fi
 
-  # ── 系统信息补充(C1 在 macOS 显示 unknown) ──
-  if have sw_vers; then
-    _mv=$(sw_vers -productVersion 2>/dev/null)
-    report INFO macos/os "macOS ${_mv:-?}($(sw_vers -productName 2>/dev/null)) · $(sysctl -n hw.model 2>/dev/null || printf '?')"
-  fi
-  _bt=$(sysctl -n kern.boottime 2>/dev/null | sed 's/.*sec = \([0-9]*\).*/\1/')
-  case "${_bt:-}" in
-    ''|*[!0-9]*) : ;;
-    *) report INFO macos/uptime "运行时长: $(( ($(date +%s) - _bt) / 86400 )) 天" ;;
-  esac
-
   # ── 系统区域/首选语言(defaults 只读;软信号) ──
   if have defaults; then
     _al=$(defaults read -g AppleLocale 2>/dev/null)
@@ -3313,7 +3510,7 @@ check_mac() {
       "") : ;;
       *) report INFO macos/locale "系统区域 AppleLocale=$_al" ;;
     esac
-    _alang=$(defaults read -g AppleLanguages 2>/dev/null | sed -n 's/^[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+    _alang=$(defaults read -g AppleLanguages 2>/dev/null | sed -n '/^[[:space:]]*[()]$/d; s/^[[:space:]]*"*\([^", ]*\)"*,*[[:space:]]*$/\1/p' | head -n 1)
     case "${_alang:-}" in
       zh-Hans*|zh-Hant-HK*|zh-Hant-MO*|zh-Hans-CN*) report SUSPICIOUS macos/lang-first "首选语言 $_alang(文化习惯类信号)" ;;
       "") : ;;
@@ -3332,42 +3529,38 @@ check_mac() {
     report SKIP macos/defaults "(defaults 不可用)"
   fi
 
-  # ── 系统代理(scutil --proxy;同 C5 语义) ──
-  if have scutil; then
-    _sp=$(scutil --proxy 2>/dev/null)
-    if [ -n "$_sp" ]; then
-      _hp=$(printf '%s' "$_sp" | sed -n 's/^HTTPProxy : //p' | head -n 1)
-      _hpt=$(printf '%s' "$_sp" | sed -n 's/^HTTPPort : //p' | head -n 1)
-      _he=$(printf '%s' "$_sp" | sed -n 's/^HTTPEnable : //p' | head -n 1)
-      _sk=$(printf '%s' "$_sp" | grep -cE 'SOCKSEnable : 1' || true)
-      if [ "${_he:-0}" = 1 ] && [ -n "${_hp:-}" ]; then
-        case "$_hp:$_hpt" in
-          127.0.0.1:*|localhost:*)
-            case " ${PROXY_PORT_LIST:-} " in
-              *" ${_hpt:-x} "*) report SUSPICIOUS macos/proxy "系统代理已启用: $_hp:${_hpt}(本机代理端口,常见于国内代理客户端)" ;;
-              *) report INFO macos/proxy "系统代理已启用: $_hp:${_hpt}" ;;
-            esac ;;
-          *) report INFO macos/proxy "系统代理已启用: $(mask_ip "$_hp"):${_hpt}" ;;
-        esac
-      elif [ "${_sk:-0}" -gt 0 ]; then
-        report INFO macos/proxy "SOCKS 代理已启用(系统级)"
-      else
-        report CLEAN macos/proxy "系统代理未启用"
+  # ── 系统代理:尊重缩进;HTTP/HTTPS/SOCKS/PAC/WPAD 分开报告 ──
+  if have scutil && _sp=$(scutil --proxy 2>/dev/null) && [ -n "$_sp" ]; then
+    _enabled=0
+    for _kind in HTTP HTTPS SOCKS; do
+      if printf '%s\n' "$_sp" | awk -v k="${_kind}Enable" '$1==k && $2==":" && $3==1 {found=1} END {exit !found}'; then
+        _enabled=1
+        # Scoped dictionaries may contain several endpoints; do not pair unrelated fields.
+        report INFO macos/proxy "${_kind} 系统代理已启用(scutil;含按接口配置,不据代理端口推断地区)"
       fi
-    fi
+    done
+    for _key in ProxyAutoConfigEnable ProxyAutoDiscoveryEnable; do
+      if printf '%s\n' "$_sp" | awk -v k="$_key" '$1==k && $2==":" && $3==1 {found=1} END {exit !found}'; then
+        _enabled=1
+        report INFO macos/proxy "自动代理 $_key 已启用(不读取 PAC 内容或输出 URL)"
+      fi
+    done
+    [ "$_enabled" = 0 ] && report CLEAN macos/proxy "系统代理未启用(scutil)"
   else
-    report SKIP macos/proxy "(无 scutil)"
+    report SKIP macos/proxy "(scutil --proxy 不可用/无权限/无数据)"
   fi
 
   # ── launchctl 服务(同 C14 语义:代理栈 INFO / 国内消费软件可疑) ──
   if have launchctl; then
     _lc_out=$(launchctl list 2>/dev/null)
     if [ -n "${_lc_out:-}" ]; then
-      _px=$(printf '%s' "$_lc_out" | awk '{print $3}' | grep -iE '^(clash|mihomo|v2ray|xray|sing-box|singbox|trojan|ss-local|ssr-|naive|hysteria|juicity|tuic|surge|shadowrocket|quantumult)' | head -n 5 | tr '\n' ' ')
-      [ -n "${_px// /}" ] && report INFO macos/proxy-daemon "launchd 代理栈: $_px(角色语义见 path/proxy)"
-      _cn=$(printf '%s' "$_lc_out" | awk '{print $3}' | grep -iE '(qq|weixin|wechat|baidu|netease|163|360safe|alibaba|aliyun|dingtalk|sunlogin|todesk|aqy|iqiyi|youku|bilibili)' | grep -v com.apple | head -n 5 | tr '\n' ' ')
-      [ -n "${_cn// /}" ] && report SUSPICIOUS macos/cn-daemon "launchd 国内软件: $_cn(文化习惯类信号)"
+      _px=$(printf '%s' "$_lc_out" | awk '{print $3}' | grep -iE '(^|\.)(clash|mihomo|v2ray|xray|sing-box|singbox|trojan|hysteria|surge|shadowrocket|quantumult)(\.|$)' | head -n 5 | tr '\n' ' ')
+      has_text "$_px" && report INFO macos/proxy-daemon "launchd 代理栈: $_px(角色语义见 path/proxy)"
+      _cn=$(printf '%s' "$_lc_out" | awk '{print $3}' | mac_cn_labels | head -n 5 | tr '\n' ' ')
+      has_text "$_cn" && report SUSPICIOUS macos/cn-daemon "launchd 已加载国内软件标签: $_cn(含运行中/按需服务,不等同于活动会话;文化习惯类信号)"
       report INFO macos/services "launchd 用户服务 $(printf '%s' "$_lc_out" | wc -l | tr -d ' ') 条(已做国内软件/代理栈匹配)"
+    else
+      report SKIP macos/services "(launchctl list 不可用/无可见服务)"
     fi
   else
     report SKIP macos/services "(无 launchctl)"
@@ -3376,7 +3569,7 @@ check_mac() {
   # ── 用户字体(~/Library/Fonts;系统自带 PingFang/华文不计) ──
   if [ -d "$HOME/Library/Fonts" ]; then
     _cf=$(ls "$HOME/Library/Fonts" 2>/dev/null | grep -iE 'LXGW|Sarasa|Noto.*CJK|SourceHan|思源|霞鹜|文泉|wqy|方正|汉仪|造字工房' | head -n 4 | tr '\n' ' ')
-    if [ -n "${_cf// /}" ]; then
+    if has_text "$_cf"; then
       report SUSPICIOUS macos/fonts "用户安装 CJK 字体: $_cf(文化习惯类信号)"
     else
       report CLEAN macos/fonts "用户字体目录无常见中文字体"
@@ -3400,19 +3593,6 @@ check_mac() {
     report SKIP macos/brew "(未安装 Homebrew)"
   fi
 
-  # ── 无线(--radio;iw 无,airport 工具尽力) ──
-  if [ "$RADIO" = 1 ]; then
-    _ap="/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
-    if [ -x "$_ap" ]; then
-      if "$_ap" -I 2>/dev/null | grep -q ' SSID'; then
-        report INFO macos/wifi "WiFi 已关联(SSID/BSSID 不输出;监管域 macOS 不经 iw 暴露)"
-      else
-        report INFO macos/wifi "WiFi 未关联"
-      fi
-    else
-      report SKIP macos/wifi "(airport 工具不可用)"
-    fi
-  fi
 }
 
 #────────────────────────────── 汇总与主流程 ──────────────────────────────

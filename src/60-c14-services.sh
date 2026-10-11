@@ -29,12 +29,21 @@ check_c14() {
     report SKIP services/procs "(ps 不可用)"
   fi
 
-  # 监听端口(/proc/net/tcp 解析,不依赖 ss)
-  if [ -r /proc/net/tcp ] || [ -r /proc/net/tcp6 ]; then
+  # 监听端口:macOS netstat / Linux proc;采集失败不得报 0 个。
+  _ports=""; _ports_ok=0
+  if [ "$PLATFORM" = macos ]; then
+    if _sockets=$(netstat -an -p tcp 2>/dev/null); then
+      _ports=$(printf '%s\n' "$_sockets" | awk '$1 ~ /^tcp/ && $6=="LISTEN" {n=split($4,a,"."); if(a[n] ~ /^[0-9]+$/) print a[n]}' | sort -un | tr '\n' ' ')
+      _ports_ok=1
+    fi
+  elif [ -r /proc/net/tcp ] || [ -r /proc/net/tcp6 ]; then
     _ports=$(for _f in /proc/net/tcp /proc/net/tcp6; do
       [ -r "$_f" ] || continue
       awk '$4=="0A"{split($2,a,":");h=a[2];d=0;for(i=1;i<=length(h);i++){d=d*16+index("0123456789ABCDEF",toupper(substr(h,i,1)))-1};print d}' "$_f"
     done | sort -un | tr '\n' ' ')
+    _ports_ok=1
+  fi
+  if [ "$_ports_ok" = 1 ]; then
     _pl=$(printf '%s' "$_ports" | wc -w | tr -d ' ')
     _phit=""
     for _p in $_ports; do
@@ -45,13 +54,15 @@ check_c14() {
     fi
     report INFO services/listen-ports "共监听 ${_pl:-0} 个端口(localhost+全网)"
   else
-    report SKIP services/listen-ports "(/proc/net/tcp 不可读)"
+    report SKIP services/listen-ports "(TCP 监听表不可读:macOS netstat / Linux proc)"
   fi
 
   # systemd 服务
-  if have systemctl && systemctl list-unit-files >/dev/null 2>&1; then
+  if [ "$PLATFORM" = macos ]; then
+    report INFO services/manager "macOS 使用 launchd;服务标签见 macos 类(单项运行请另查 --section macos)"
+  elif have systemctl && systemctl list-unit-files >/dev/null 2>&1; then
     _se=$(systemctl list-unit-files --type=service 2>/dev/null | awk '{print $1,$2}' | grep -iE "$CN_APP_PROC_RE|$CLOUD_AGENT_PROC_RE" | head -n 6 | tr '\n' ' ')
-    if [ -n "${_se// /}" ]; then
+    if has_text "$_se"; then
       report INFO services/systemd-cn "systemd 服务命中: $(printf '%s' "$_se" | cut -c1-100)(enabled 态见列表)"
     else
       report CLEAN services/systemd-cn "systemd 服务无国内软件命中"
