@@ -1,0 +1,83 @@
+#────────────────────────────── C14 services ──────────────────────────────
+# 模块: 60-c14-services.sh
+
+check_c14() {
+  hdr "C14 services · 进程、端口与服务(四态:installed/enabled/listening/active)"
+
+  _ps=$(ps_filtered)
+  if [ -n "$_ps" ]; then
+    # 国内软件进程(运行中 = active)
+    _ap=$(printf '%s' "$_ps" | grep -vE 'grep|region-trace' | grep -icE "$CN_APP_PROC_RE" || true)
+    if [ "${_ap:-0}" -gt 0 ]; then
+      report SUSPICIOUS services/cn-app-proc "国内软件进程运行中 x$_ap(active 态)"
+    else
+      report CLEAN services/cn-app-proc "无国内软件进程"
+    fi
+    # 代理栈进程(INFO,交 C5 深判)
+    _pp=$(printf '%s' "$_ps" | grep -vE 'grep|region-trace' | grep -icE "$PROXY_PROC_RE" || true)
+    if [ "${_pp:-0}" -gt 0 ]; then
+      report INFO services/proxy-proc "代理栈进程运行中 x$_pp(clash/v2ray/xray… 拓扑角色判定属 C5)"
+    fi
+    # 命令行含非 ASCII(排除自身进程树,防自匹配)
+    _cp=$(printf '%s' "$_ps" | LC_ALL=C grep -c '[^ -~]' || true)
+    if [ "${_cp:-0}" -gt 0 ]; then
+      report SUSPICIOUS services/proc-nonascii "$_cp 条进程命令行含非 ASCII(可能为中文路径)"
+    else
+      report CLEAN services/proc-nonascii "无非 ASCII 进程命令行(已排除自身进程树)"
+    fi
+  else
+    report SKIP services/procs "(ps 不可用)"
+  fi
+
+  # 监听端口(/proc/net/tcp 解析,不依赖 ss)
+  if [ -r /proc/net/tcp ] || [ -r /proc/net/tcp6 ]; then
+    _ports=$(for _f in /proc/net/tcp /proc/net/tcp6; do
+      [ -r "$_f" ] || continue
+      awk '$4=="0A"{split($2,a,":");h=a[2];d=0;for(i=1;i<=length(h);i++){d=d*16+index("0123456789ABCDEF",toupper(substr(h,i,1)))-1};print d}' "$_f"
+    done | sort -un | tr '\n' ' ')
+    _pl=$(printf '%s' "$_ports" | wc -w | tr -d ' ')
+    _phit=""
+    for _p in $_ports; do
+      case " $PROXY_PORT_LIST " in *" $_p "*) _phit="${_phit:+$_phit }$_p" ;; esac
+    done
+    if [ -n "$_phit" ]; then
+      report INFO services/proxy-ports "监听端口命中代理栈常用端口: $_phit(listening 态,交 C5)"
+    fi
+    report INFO services/listen-ports "共监听 ${_pl:-0} 个端口(localhost+全网)"
+  else
+    report SKIP services/listen-ports "(/proc/net/tcp 不可读)"
+  fi
+
+  # systemd 服务
+  if have systemctl && systemctl list-unit-files >/dev/null 2>&1; then
+    _se=$(systemctl list-unit-files --type=service 2>/dev/null | awk '{print $1,$2}' | grep -iE "$CN_APP_PROC_RE|$CLOUD_AGENT_PROC_RE" | head -n 6 | tr '\n' ' ')
+    if [ -n "${_se// /}" ]; then
+      report INFO services/systemd-cn "systemd 服务命中: $(printf '%s' "$_se" | cut -c1-100)(enabled 态见列表)"
+    else
+      report CLEAN services/systemd-cn "systemd 服务无国内软件命中"
+    fi
+  else
+    report SKIP services/systemd "(无 systemd/不可用 —— 容器常见)"
+  fi
+
+  # cron
+  _cron_hit=0
+  if have crontab; then
+    if crontab -l 2>/dev/null | grep -qE "$CN_DOMAIN_RE"; then _cron_hit=1; fi
+  fi
+  if [ -d /etc/cron.d ]; then
+    grep -rhE "$CN_DOMAIN_RE" /etc/cron.d 2>/dev/null | grep -q . && _cron_hit=1
+  fi
+  if [ "$_cron_hit" = 1 ]; then
+    report SUSPICIOUS services/cron "cron 任务含国内域名引用"
+  else
+    report SKIP services/cron "(cron 不可读或无命中)"
+  fi
+
+  # k8s pod 判定
+  if [ -d /var/run/secrets/kubernetes.io/serviceaccount ]; then
+    report INFO services/k8s "检出 K8s ServiceAccount 挂载(运行于 pod;cluster DNS/TZ 注入见 dns/locale 类)"
+  elif [ -n "$KUBERNETES_SERVICE_HOST" ]; then
+    report INFO services/k8s "KUBERNETES_SERVICE_HOST 已设置(可能为 pod/节点)"
+  fi
+}
